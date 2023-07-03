@@ -1,7 +1,7 @@
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-## MODEL OPTIONS
+## GOOD MODEL OPTIONS
 # lmsys/vicuna-7b-v1.3
 # tiiuae/falcon-7b-instruct
 
@@ -18,28 +18,30 @@ class TextGenerator:
             **kwargs
         )
 
-    def encode_text(self, text):
+    def encode(self, text):
         data = self.tokenizer(
             text, return_tensors='pt', padding=True, truncation=True
         )
-        return data['input_ids'].to('cuda')
+        return data['input_ids'].to('cuda'), data['attention_mask'].to('cuda')
 
-    def embed_text(self, text):
+    def embed(self, text):
         # encode input text
-        input_ids = self.encode_text(text)
+        input_ids, attn_mask = self.encode(text)
 
         # get model output
-        output = self.model(input_ids)
+        output = self.model(input_ids, attn_mask)
 
         # get embedding
-        embedding = output.hidden_states[-1][:, 0, :]
+        state = output.hidden_states[-1]
+        mask = attn_mask.unsqueeze(-1).float()
+        embed = (state*mask).sum(1)/mask.sum(1)
 
         # return embedding
-        return embedding
+        return embed
 
-    def generate_text(self, prompt, num_samples=None, max_length=200, top_k=10):
+    def generate(self, prompt, num_samples=None, max_length=200, top_k=10):
         # encode input prompt
-        input_ids = self.encode_text(prompt)
+        input_ids, attn_mask = self.encode(prompt)
 
         # generate output ids
         num_return_sequences = num_samples if num_samples is not None else 1
@@ -58,5 +60,5 @@ class TextGenerator:
 
 # example usage
 # gen = TextGenerator('tiiuae/falcon-7b-instruct')
-# print(gen.generate_text('Write a poem about Valencia.'))
+# print(gen.generate('Write a poem about Valencia.'))
 

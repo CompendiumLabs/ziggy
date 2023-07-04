@@ -1,10 +1,16 @@
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM, TextStreamer
+import faiss
+import faiss.contrib.torch_utils
 from math import ceil, log2
+from transformers import AutoTokenizer, AutoModelForCausalLM, TextStreamer
 
 ## GOOD MODEL OPTIONS
 # lmsys/vicuna-7b-v1.3
 # tiiuae/falcon-7b-instruct
+
+# printer for streaming
+def sprint(s):
+    print(s, end='', flush=True)
 
 # sampler for manual generation
 def sample(logits, top_k=None, temp=1.0):
@@ -14,17 +20,18 @@ def sample(logits, top_k=None, temp=1.0):
         logits = torch.where(logits >= cutoff.unsqueeze(-1), logits, -torch.inf)
 
     # turn into probabilities and return sample
-    probs = torch.softmax(temp*logits, dim=-1)
+    probs = torch.softmax(logits/temp, dim=-1)
     index = torch.multinomial(probs, 1).squeeze(-1)
     return index
 
 class HuggingfaceModel:
-    def __init__(self, model, **kwargs):
+    def __init__(self, model, block_size=1024, **kwargs):
         # load tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(model)
         self.tokenizer.pad_token = self.tokenizer.eos_token
 
         # load model code and weights
+        self.block_size = block_size
         self.model = AutoModelForCausalLM.from_pretrained(
             model, device_map='auto', trust_remote_code=True, output_hidden_states=True,
             load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16,
@@ -42,7 +49,7 @@ class HuggingfaceModel:
         input_ids, attn_mask = self.encode(text)
 
         # get model output
-        output = self.model(input_ids, attn_mask)
+        output = self.model(input_ids)
 
         # get masked embedding
         state = output.hidden_states[-1]
@@ -53,70 +60,81 @@ class HuggingfaceModel:
         norm = embed.square().sum(1).sqrt()
         return embed/norm.unsqueeze(-1)
 
-    def generate(self, prompt, num_samples=None, max_length=200, top_k=10, stream=False):
-        num_return_sequences = num_samples if num_samples is not None else 1
-        streamer = TextStreamer(self.tokenizer) if stream else None
+    def generate(self, prompt, max_new_tokens=200, top_k=10, stream=False):
+        streamer = TextStreamer(self.tokenizer, skip_special_tokens=True) if stream else None
 
         # encode input prompt
-        input_ids, attn_mask = self.encode(prompt)
+        input_ids, _ = self.encode(prompt)
 
         # generate output ids
         output_ids = self.model.generate(
-            input_ids, max_length=max_length, do_sample=True, streamer=streamer,
-            top_k=top_k, num_return_sequences=num_return_sequences
+            input_ids, max_new_tokens=max_new_tokens, do_sample=True,
+            streamer=streamer, top_k=top_k
         )
 
         if not stream:
             # decode output text
-            output_text = [
-                self.tokenizer.decode(oids, skip_special_tokens=True) for oids in output_ids
-            ]
+            output_text = self.tokenizer.decode(output_ids[0], skip_special_tokens=True)
+            return output_text
 
-            # return output text
-            return output_text[0] if num_samples is None else output_text
-
-    def generator(self, prompt, num_samples=None, max_length=200, top_k=10, temp=1.0):
-        num_return_sequences = num_samples if num_samples is not None else 1
-
+    # proper python generator variant that uses model.__call__ directly
+    def generator(self, prompt, max_new_tokens=200, top_k=10, temp=1.0):
         # encode input prompt
-        input_ids, attn_mask = self.encode(prompt)
+        input_ids, _ = self.encode(prompt)
 
-        # get new logit at last element
-        output = self.model(input_ids, attn_mask)
-        logits = output.logits[:,-1,:]
-        index = sample(logits, top_k=top_k, temp=temp)
+        # trim if needed
+        if input_ids.size(1) > self.block_size:
+            input_ids = input_ids[:,:self.block_size]
 
-        # decode and return
-        toks = self.tokenizer.decode(index)
+        # loop until limit and eos token
+        for i in range(max_new_tokens):
+            # get new index at last element
+            output = self.model(input_ids)
+            logits = output.logits[:,-1,:]
+            index = sample(logits, top_k=top_k, temp=temp)
 
-        # shift and add to input_ids
-        input_ids = torch.cat(input_ids[:,1:,:], index.unsqueeze(1), 1)
+            # break if we hit end token
+            if index[0] == self.tokenizer.eos_token_id:
+                break
 
-class TorchVectorIndex:
-    def __init__(self, dims, size=1024, dtype=torch.float32, device='cuda'):
-        # configuration
+            # decode and return
+            yield self.tokenizer.decode(index)
+
+            # shift and add to input_ids
+            trim = 1 if input_ids.size(1) == self.block_size else 0
+            input_ids = torch.cat((input_ids[:,trim:], index.unsqueeze(1)), dim=1)
+
+class VectorIndex:
+    def __init__(self, dims, dtype=torch.float32, device='cuda'):
         self.dims = dims
-        self.size = size
         self.dtype = dtype
         self.device = device
-        assert(log2(size) % 1 == 0)
+
+class TorchVectorIndex(VectorIndex):
+    def __init__(self, dims, max_size=1024, dtype=torch.float32, device='cuda'):
+        assert(log2(max_size) % 1 == 0)
+        super().__init__(dims, dtype=dtype, device=device)
 
         # empty state
+        self.max_size = max_size
         self.labels = []
-        self.values = torch.empty(size, dims, dtype=dtype, device=device)
+        self.values = torch.empty(max_size, dims, dtype=dtype, device=device)
+
+    def size(self):
+        return len(self.labels)
 
     def expand(self, min_size):
         # check if needed
-        if self.size >= min_size:
+        if self.max_size >= min_size:
             return
 
         # increase size to next power of 2
         values_old = self.values
-        self.size = pow(2, round(ceil(log2(min_size))))
+        self.max_size = pow(2, round(ceil(log2(min_size))))
 
         # create new tensor and assign old values
         self.values = torch.empty(
-            self.size, self.dims, dtype=self.dtype, device=self.device
+            self.max_size, self.dims, dtype=self.dtype, device=self.device
         )
         self.values[:nlabels,:] = values_old[:nlabels,:]
 
@@ -136,29 +154,67 @@ class TorchVectorIndex:
         if strict and len(exist) > 0:
             raise Exception(f'Label {lab} is already in index.')
 
-        # update existing
-        locs, idxs = zip([
-            (i, self.labels.index(x)) for i, x in enumerate(labs) if x in labs
-        ])
-        self.values[idxs,:] = vals[locs,:]
+        if len(exist) > 0:
+            # update existing
+            elocs, idxs = zip([
+                (i, self.labels.index(x)) for i, x in enumerate(labs) if x in exist
+            ])
+            self.values[idxs,:] = vals[elocs,:]
 
-        # add in new labels and track size
-        nlabels0 = len(self.labels)
-        self.labels.append(novel)
-        nlabels1 = len(self.labels)
+        if len(novel) > 0:
+            # add in new labels
+            nlabels0 = self.size()
+            self.labels.extend(novel)
 
-        # expand tensor and assign new values
-        self.expand(nlabels1)
-        self.values[nlabels0:nlabels1,:] = vals
+            # expand size if needed
+            nlabels1 = self.size()
+            self.expand(nlabels1)
+
+            # assign new vector values
+            nlocs = [i for i, x in enumerate(labs) if x in novel]
+            self.values[nlabels0:nlabels1,:] = vecs[nlocs,:]
 
     def remove(self, labs):
         pass
 
-    def search(self, vec):
-        pass
+    def search(self, vecs, k, return_simil=True):
+        # allow for single vec
+        if vecs.ndim == 1:
+            vecs = vecs.unsqueeze(0)
 
-class FaissVectorIndex:
-    pass
+        # compute distance matrix
+        num = self.size()
+        sim = vecs @ self.values[:num,:].T
+
+        # get top results
+        tops = torch.topk(sim, k)
+        labs = [[self.labels[i] for i in row] for row in tops.indices]
+        vals = tops.values
+
+        # return labels/simils
+        return labs, vals if return_simil else labs
+
+# faiss doesn't work great with ids and removal!
+class FaissVectorIndex(VectorIndex):
+    def __init__(self, dims, spec='Flat', dtype=torch.float32, device='cuda'):
+        assert(dtype == torch.float32)
+        super().__init__(dims, dtype=dtype, device=device)
+
+        # create faiss index
+        self.labels = []
+        self.index = faiss.index_factory(dims, spec)
+
+    def train(self, vecs):
+        self.index.train(vecs)
+
+    def add(self, labs, vecs):
+        self.index.add_with_ids(vecs, labs)
+
+    def remove(self, labs):
+        self.index.remove_ids(labs)
+
+    def search(self, vec, k):
+        return self.index.search(vec, k)
 
 # example usage
 # gen = HuggingfaceModel('tiiuae/falcon-7b-instruct')

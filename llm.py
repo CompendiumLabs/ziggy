@@ -1,12 +1,18 @@
-import torch
-import faiss
-import faiss.contrib.torch_utils
-from math import ceil, log2
-from transformers import AutoTokenizer, AutoModelForCausalLM, TextStreamer
+## LLM embedding, generation, and indexing code
 
-## GOOD MODEL OPTIONS
-# lmsys/vicuna-7b-v1.3
-# tiiuae/falcon-7b-instruct
+import gc
+import os
+import torch
+
+from math import ceil, log2
+from operator import itemgetter
+from itertools import chain, groupby
+from transformers import AutoTokenizer, AutoModelForCausalLM
+
+from utils import Bundle
+
+# load config
+config = Bundle.from_toml('config.toml')
 
 # printer for streaming
 def sprint(s):
@@ -25,7 +31,7 @@ def sample(logits, top_k=None, temp=1.0):
     return index
 
 class HuggingfaceModel:
-    def __init__(self, model, block_size=1024, **kwargs):
+    def __init__(self, model=config.model, block_size=1024, **kwargs):
         # load tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(model)
         self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -38,6 +44,9 @@ class HuggingfaceModel:
             **kwargs
         )
 
+        # get embedding dimension
+        self.dims = self.model.config.hidden_size
+
     def encode(self, text):
         data = self.tokenizer(
             text, return_tensors='pt', padding=True, truncation=True
@@ -48,8 +57,9 @@ class HuggingfaceModel:
         # encode input text
         input_ids, attn_mask = self.encode(text)
 
-        # get model output
-        output = self.model(input_ids)
+        # get model output (no grad for memory usage)
+        with torch.no_grad():
+            output = self.model(input_ids)
 
         # get masked embedding
         state = output.hidden_states[-1]
@@ -60,25 +70,8 @@ class HuggingfaceModel:
         norm = embed.square().sum(1).sqrt()
         return embed/norm.unsqueeze(-1)
 
-    def generate(self, prompt, max_new_tokens=200, top_k=10, stream=False):
-        streamer = TextStreamer(self.tokenizer, skip_special_tokens=True) if stream else None
-
-        # encode input prompt
-        input_ids, _ = self.encode(prompt)
-
-        # generate output ids
-        output_ids = self.model.generate(
-            input_ids, max_new_tokens=max_new_tokens, do_sample=True,
-            streamer=streamer, top_k=top_k
-        )
-
-        if not stream:
-            # decode output text
-            output_text = self.tokenizer.decode(output_ids[0], skip_special_tokens=True)
-            return output_text
-
     # proper python generator variant that uses model.__call__ directly
-    def generator(self, prompt, max_new_tokens=200, top_k=10, temp=1.0):
+    def generate(self, prompt, max_new_tokens=200, top_k=10, temp=1.0):
         # encode input prompt
         input_ids, _ = self.encode(prompt)
 
@@ -88,8 +81,11 @@ class HuggingfaceModel:
 
         # loop until limit and eos token
         for i in range(max_new_tokens):
+            # generate next logits (no grad for memory usage)
+            with torch.no_grad():
+                output = self.model(input_ids)
+
             # get new index at last element
-            output = self.model(input_ids)
             logits = output.logits[:,-1,:]
             index = sample(logits, top_k=top_k, temp=temp)
 
@@ -129,6 +125,7 @@ class TorchVectorIndex(VectorIndex):
             return
 
         # increase size to next power of 2
+        nlabels = self.size()
         values_old = self.values
         self.max_size = pow(2, round(ceil(log2(min_size))))
 
@@ -152,70 +149,133 @@ class TorchVectorIndex(VectorIndex):
 
         # raise if trying invalid strict add
         if strict and len(exist) > 0:
-            raise Exception(f'Label {lab} is already in index.')
+            raise Exception(f'Trying to add existing labels in strict mode.')
 
         if len(exist) > 0:
             # update existing
-            elocs, idxs = zip([
+            elocs, idxs = zip(*[
                 (i, self.labels.index(x)) for i, x in enumerate(labs) if x in exist
             ])
-            self.values[idxs,:] = vals[elocs,:]
+            self.values[idxs,:] = vecs[elocs,:]
 
         if len(novel) > 0:
-            # add in new labels
-            nlabels0 = self.size()
-            self.labels.extend(novel)
+            # get new labels in input order
+            xlocs, xlabs = zip(*[
+                (i, x) for i, x in enumerate(labs) if x in novel
+            ])
 
             # expand size if needed
-            nlabels1 = self.size()
+            nlabels0 = self.size()
+            nlabels1 = nlabels0 + len(novel)
             self.expand(nlabels1)
 
-            # assign new vector values
-            nlocs = [i for i, x in enumerate(labs) if x in novel]
-            self.values[nlabels0:nlabels1,:] = vecs[nlocs,:]
+            # add in new labels and vectors
+            self.labels.extend(xlabs)
+            self.values[nlabels0:nlabels1,:] = vecs[xlocs,:]
 
     def remove(self, labs):
         pass
 
+    def clear(self):
+        self.labels = []
+
     def search(self, vecs, k, return_simil=True):
         # allow for single vec
-        if vecs.ndim == 1:
+        squeeze = vecs.ndim == 1
+        if squeeze:
             vecs = vecs.unsqueeze(0)
 
-        # compute distance matrix
+        # clamp k to max size
         num = self.size()
+        k1 = min(k, num)
+
+        # compute distance matrix
         sim = vecs @ self.values[:num,:].T
 
         # get top results
-        tops = torch.topk(sim, k)
+        tops = sim.topk(k1)
         labs = [[self.labels[i] for i in row] for row in tops.indices]
         vals = tops.values
+
+        # return single vec if needed
+        if squeeze:
+            labs, vals = labs[0], vals[0]
 
         # return labels/simils
         return labs, vals if return_simil else labs
 
-# faiss doesn't work great with ids and removal!
-class FaissVectorIndex(VectorIndex):
-    def __init__(self, dims, spec='Flat', dtype=torch.float32, device='cuda'):
-        assert(dtype == torch.float32)
-        super().__init__(dims, dtype=dtype, device=device)
+def length_splitter(text, max_size):
+    if (length := len(text)) > max_size:
+        nchunks = ceil(length/max_size)
+        starts = [i*max_size for i in range(nchunks)]
+        return [text[s:s+max_size] for s in starts]
+    else:
+        return [text]
 
-        # create faiss index
-        self.labels = []
-        self.index = faiss.index_factory(dims, spec)
+# default paragraph splitter
+def paragraph_splitter(text, max_size):
+    paras = [
+        para for para in text.split('\n\n') if len(para.strip()) > 0
+    ]
+    return list(chain.from_iterable(
+        length_splitter(para, max_size) for para in paras
+    ))
 
-    def train(self, vecs):
-        self.index.train(vecs)
+# group tuples by first element
+def groupby_dict(tups, idx=0):
+    return {
+        i: [k for _, k in j] for i, j in groupby(tups, key=itemgetter(idx))
+    }
 
-    def add(self, labs, vecs):
-        self.index.add_with_ids(vecs, labs)
+# robust text reader (for encoding errors)
+def robust_read(path):
+    with open(path, 'r', errors='ignore') as fid:
+        return fid.read()
 
-    def remove(self, labs):
-        self.index.remove_ids(labs)
+# index documents in a specified directory
+class FilesystemDatabase:
+    def __init__(self, path, model=config.model, max_size=config.max_size, index=None, splitter=paragraph_splitter):
+        self.path = path
+        self.splitter = lambda c: splitter(c, max_size)
+        self.model = HuggingfaceModel(model) if type(model) is str else model
+        self.index = index if index is not None else TorchVectorIndex(self.model.dims)
+        self.reindex()
 
-    def search(self, vec, k):
-        return self.index.search(vec, k)
+    def reindex(self):
+        # clear existing entries
+        self.index.clear()
+
+        # get files in directory
+        self.names = sorted(os.listdir(self.path))
+
+        # read in all files and split into chunks
+        paths = [os.path.join(self.path, x) for x in self.names]
+        text = [robust_read(x) for x in paths]
+        self.chunks = [self.splitter(x) for x in text]
+
+        # vectorize chunks and make labels, then add to index
+        for i, c in enumerate(self.chunks):
+            print(i)
+            print(c)
+            print()
+            labs = [(i, j) for j in range(len(c))]
+            vecs = torch.cat([self.model.embed(x).detach() for x in c])
+            self.index.add(labs, vecs)
+
+    def search(self, query, k=10, cutoff=0.0):
+        # get relevant chunks
+        qvec = self.model.embed(query).squeeze()
+        labs, vecs = self.index.search(qvec, k)
+        match = list(zip(labs, vecs.tolist()))
+
+        # group by document and filter by cutoff
+        locs = groupby_dict([l for l, v in match if v > cutoff])
+        text = {self.names[k]: [self.chunks[k][i] for i in v] for k, v in locs.items()}
+
+        # return text
+        return text
 
 # example usage
 # gen = HuggingfaceModel('tiiuae/falcon-7b-instruct')
-# gen.generate('Write a poem about Valencia.', stream=True)
+# for s in gen.generator('Write a poem about Valencia.'):
+#     sprint(s)

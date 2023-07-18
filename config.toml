@@ -1,0 +1,9 @@
+# global configuration file
+
+## GOOD MODELS
+# lmsys/vicuna-7b-v1.3
+# tiiuae/falcon-7b-instruct
+
+# generation options
+model = "tiiuae/falcon-7b-instruct" # model to use for generation
+max_size = 512 # maximum size of the input context

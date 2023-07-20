@@ -7,12 +7,22 @@ import torch
 from math import ceil, log2
 from operator import itemgetter
 from itertools import chain, groupby
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
 
 from utils import Bundle
 
 # load config
 config = Bundle.from_toml('config.toml')
+auth = Bundle.from_toml('auth.toml')
+
+# llama special strings
+B_INST, E_INST = "[INST]", "[/INST]"
+B_SYS, E_SYS = "<<SYS>>", "\n<</SYS>>"
+DEFAULT_SYSTEM_PROMPT = "You are a helpful and honest assistant. Always answer if you are able to. If a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information."
+
+# generate a llama query
+def llama_chat(query, system_prompt, **kwargs):
+    return f'{B_INST} {B_SYS}\n{system_prompt}\n{E_SYS}\n\n{query} {E_INST}'
 
 # printer for streaming
 def sprint(s):
@@ -30,17 +40,26 @@ def sample(logits, top_k=None, temp=1.0):
     index = torch.multinomial(probs, 1).squeeze(-1)
     return index
 
+# convert sentencepiece tokens to text
+def convert_sentencepice(toks):
+    return ''.join([
+        tok.replace('▁', ' ') if tok.startswith('▁') else tok.replace('<0x0A>', '\n') for tok in toks
+    ])
+
 class HuggingfaceModel:
     def __init__(self, model=config.model, block_size=1024, **kwargs):
         # load tokenizer
-        self.tokenizer = AutoTokenizer.from_pretrained(model)
+        self.tokenizer = AutoTokenizer.from_pretrained(model, use_auth_token=True)
         self.tokenizer.pad_token = self.tokenizer.eos_token
 
         # load model code and weights
         self.block_size = block_size
+        self.modconf = AutoConfig.from_pretrained(
+            model, output_hidden_states=True, pretraining_tp=1, use_auth_token=True
+        )
         self.model = AutoModelForCausalLM.from_pretrained(
-            model, device_map='auto', trust_remote_code=True, output_hidden_states=True,
-            load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16,
+            model, device_map='auto', trust_remote_code=True, load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.bfloat16, use_auth_token=True, config=self.modconf,
             **kwargs
         )
 
@@ -71,7 +90,12 @@ class HuggingfaceModel:
         return embed/norm.unsqueeze(-1)
 
     # proper python generator variant that uses model.__call__ directly
-    def generate(self, prompt, max_new_tokens=200, top_k=10, temp=1.0):
+    def generate(self, prompt, chat=True, max_new_tokens=200, top_k=10, temp=1.0):
+        # splice in chat instructions
+        if chat is not False:
+            system_prompt = DEFAULT_SYSTEM_PROMPT if chat is True else chat
+            prompt = llama_chat(prompt, system_prompt=system_prompt)
+
         # encode input prompt
         input_ids, _ = self.encode(prompt)
 
@@ -93,8 +117,10 @@ class HuggingfaceModel:
             if index[0] == self.tokenizer.eos_token_id:
                 break
 
-            # decode and return
-            yield self.tokenizer.decode(index)
+            # decode and return (llama not doing this right)
+            tokens = self.tokenizer.convert_ids_to_tokens(index)
+            text = convert_sentencepice(tokens)
+            yield text.lstrip() if i <= 1 else text
 
             # shift and add to input_ids
             trim = 1 if input_ids.size(1) == self.block_size else 0

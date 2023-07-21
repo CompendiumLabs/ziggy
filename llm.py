@@ -323,13 +323,15 @@ class FilesystemDatabase:
 
     def query(self, query, **kwargs):
         # search db and get some context
-        chunks = {k: '\n'.join(v) for k, v in self.search(query, **kwargs).items()}
-        context = '\n\n'.join([f"{k}:\n{v}" for k, v in chunks.items()])
+        matches = self.search(query, **kwargs)
+        chunks = {k: '; '.join(v) for k, v in matches.items()}
+        context = '\n'.join([f'{k}: {v}' for k, v in chunks.items()])
 
         # construct prompt
-        system = f'{DEFAULT_SYSTEM_PROMPT}. Below are some relevant snippets of text from my person notes. Using a synthesis of your general knowledge and my notes, answer the question posed at the end concisely. Try to quote specific lines from my notes where possible.'
-        user = f'{context}\n\n{query}'
-        
+        meta = 'Below is some relevant text from my person notes. Using a synthesis of your general knowledge and my notes, answer the question posed at the end concisely. Try to provide quotes from my notes as evidence when possible.'
+        system = f'{DEFAULT_SYSTEM_PROMPT}\n\n{meta}'
+        user = f'NOTES:\n{context}\n\nQUESTION: {query}'
+
         # generate response
         yield from self.model.generate(user, chat=system)
 

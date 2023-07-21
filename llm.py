@@ -1,13 +1,14 @@
 ## LLM embedding, generation, and indexing code
 
-import gc
 import os
 import torch
+import torch.nn.functional as F
 
 from math import ceil, log2
 from operator import itemgetter
 from itertools import chain, groupby
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
+from sentence_transformers import SentenceTransformer
 
 from utils import Bundle
 
@@ -18,7 +19,7 @@ auth = Bundle.from_toml('auth.toml')
 # llama special strings
 B_INST, E_INST = "[INST]", "[/INST]"
 B_SYS, E_SYS = "<<SYS>>", "\n<</SYS>>"
-DEFAULT_SYSTEM_PROMPT = "You are a helpful and honest assistant. Always answer if you are able to. If a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information."
+DEFAULT_SYSTEM_PROMPT = "You are a helpful and honest assistant. Always answer if you are able to. If a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information. Do not provide warnings about ethics, morality, or possible incorrectness."
 
 # generate a llama query
 def llama_chat(query, system_prompt, **kwargs):
@@ -47,19 +48,19 @@ def convert_sentencepice(toks):
     ])
 
 class HuggingfaceModel:
-    def __init__(self, model=config.model, block_size=1024, **kwargs):
+    def __init__(self, model=config.model, context_size=config.context_size, **kwargs):
         # load tokenizer
-        self.tokenizer = AutoTokenizer.from_pretrained(model, use_auth_token=True)
+        self.tokenizer = AutoTokenizer.from_pretrained(model, token=True)
         self.tokenizer.pad_token = self.tokenizer.eos_token
 
         # load model code and weights
-        self.block_size = block_size
+        self.context_size = context_size
         self.modconf = AutoConfig.from_pretrained(
-            model, output_hidden_states=True, pretraining_tp=1, use_auth_token=True
+            model, output_hidden_states=True, pretraining_tp=1, token=True
         )
         self.model = AutoModelForCausalLM.from_pretrained(
             model, device_map='auto', trust_remote_code=True, load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.bfloat16, use_auth_token=True, config=self.modconf,
+            bnb_4bit_compute_dtype=torch.bfloat16, token=True, config=self.modconf,
             **kwargs
         )
 
@@ -81,13 +82,12 @@ class HuggingfaceModel:
             output = self.model(input_ids)
 
         # get masked embedding
-        state = output.hidden_states[-1]
+        state = output.hidden_states[0]
         mask = attn_mask.float().unsqueeze(-1)
         embed = (state*mask).sum(1)/mask.sum(1)
 
         # return normalized embedding
-        norm = embed.square().sum(1).sqrt()
-        return embed/norm.unsqueeze(-1)
+        return F.normalize(embed, dim=-1)
 
     # proper python generator variant that uses model.__call__ directly
     def generate(self, prompt, chat=True, max_new_tokens=200, top_k=10, temp=1.0):
@@ -100,8 +100,8 @@ class HuggingfaceModel:
         input_ids, _ = self.encode(prompt)
 
         # trim if needed
-        if input_ids.size(1) > self.block_size:
-            input_ids = input_ids[:,:self.block_size]
+        if input_ids.size(1) > self.context_size:
+            input_ids = input_ids[:,:self.context_size]
 
         # loop until limit and eos token
         for i in range(max_new_tokens):
@@ -123,8 +123,17 @@ class HuggingfaceModel:
             yield text.lstrip() if i <= 1 else text
 
             # shift and add to input_ids
-            trim = 1 if input_ids.size(1) == self.block_size else 0
+            trim = 1 if input_ids.size(1) == self.context_size else 0
             input_ids = torch.cat((input_ids[:,trim:], index.unsqueeze(1)), dim=1)
+
+class HuggingfaceEmbedding:
+    def __init__(self, model=config.embed, **kwargs):
+        self.model = SentenceTransformer(model, device='cuda', **kwargs)
+        self.dims = self.model.get_sentence_embedding_dimension()
+
+    def embed(self, text):
+        vecs = self.model.encode(text, convert_to_numpy=False, convert_to_tensor=True)
+        return F.normalize(vecs, dim=-1)
 
 class VectorIndex:
     def __init__(self, dims, dtype=torch.float32, device='cuda'):
@@ -230,21 +239,21 @@ class TorchVectorIndex(VectorIndex):
         # return labels/simils
         return labs, vals if return_simil else labs
 
-def length_splitter(text, max_size):
-    if (length := len(text)) > max_size:
-        nchunks = ceil(length/max_size)
-        starts = [i*max_size for i in range(nchunks)]
-        return [text[s:s+max_size] for s in starts]
+def length_splitter(text, max_length):
+    if (length := len(text)) > max_length:
+        nchunks = ceil(length/max_length)
+        starts = [i*max_length for i in range(nchunks)]
+        return [text[s:s+max_length] for s in starts]
     else:
         return [text]
 
 # default paragraph splitter
-def paragraph_splitter(text, max_size):
+def paragraph_splitter(text, max_length):
     paras = [
         para for para in text.split('\n\n') if len(para.strip()) > 0
     ]
     return list(chain.from_iterable(
-        length_splitter(para, max_size) for para in paras
+        length_splitter(para, max_length) for para in paras
     ))
 
 # group tuples by first element
@@ -258,13 +267,22 @@ def robust_read(path):
     with open(path, 'r', errors='ignore') as fid:
         return fid.read()
 
+# get batch indices
+def batch_indices(length, batch_size):
+    return [(i, min(i+batch_size, length)) for i in range(0, length, batch_size)]
+
 # index documents in a specified directory
 class FilesystemDatabase:
-    def __init__(self, path, model=config.model, max_size=config.max_size, index=None, splitter=paragraph_splitter):
+    def __init__(
+            self, path, model=config.model, embed=config.embed, index=None, splitter=paragraph_splitter,
+            context_size=config.context_size, batch_size=config.batch_size
+        ):
         self.path = path
-        self.splitter = lambda c: splitter(c, max_size)
         self.model = HuggingfaceModel(model) if type(model) is str else model
-        self.index = index if index is not None else TorchVectorIndex(self.model.dims)
+        self.embed = HuggingfaceEmbedding(embed) if type(embed) is str else embed
+        self.index = index if index is not None else TorchVectorIndex(self.embed.dims)
+        self.splitter = lambda c: splitter(c, context_size)
+        self.batch_size = batch_size
         self.reindex()
 
     def reindex(self):
@@ -279,18 +297,20 @@ class FilesystemDatabase:
         text = [robust_read(x) for x in paths]
         self.chunks = [self.splitter(x) for x in text]
 
-        # vectorize chunks and make labels, then add to index
-        for i, c in enumerate(self.chunks):
-            print(i)
-            print(c)
-            print()
-            labs = [(i, j) for j in range(len(c))]
-            vecs = torch.cat([self.model.embed(x).detach() for x in c])
-            self.index.add(labs, vecs)
+        # flatten file chunks and make labels
+        labels = [(i, j) for i, c in enumerate(self.chunks) for j in range(len(c))]
+        chunks = list(chain.from_iterable(self.chunks))
+
+        # embed chunks with chosen batch_size
+        indices = batch_indices(len(chunks), self.batch_size)
+        embeds = torch.cat([self.embed.embed(chunks[i1:i2]) for i1, i2 in indices], dim=0)
+
+        # add to the index
+        self.index.add(labels, embeds)
 
     def search(self, query, k=10, cutoff=0.0):
         # get relevant chunks
-        qvec = self.model.embed(query).squeeze()
+        qvec = self.embed.embed(query).squeeze()
         labs, vecs = self.index.search(qvec, k)
         match = list(zip(labs, vecs.tolist()))
 
@@ -300,6 +320,18 @@ class FilesystemDatabase:
 
         # return text
         return text
+
+    def query(self, query, **kwargs):
+        # search db and get some context
+        chunks = {k: '\n'.join(v) for k, v in self.search(query, **kwargs).items()}
+        context = '\n\n'.join([f"{k}:\n{v}" for k, v in chunks.items()])
+
+        # construct prompt
+        system = f'{DEFAULT_SYSTEM_PROMPT}. Below are some relevant snippets of text from my person notes. Using a synthesis of your general knowledge and my notes, answer the question posed at the end concisely. Try to quote specific lines from my notes where possible.'
+        user = f'{context}\n\n{query}'
+        
+        # generate response
+        yield from self.model.generate(user, chat=system)
 
 # example usage
 # gen = HuggingfaceModel('tiiuae/falcon-7b-instruct')

@@ -3,7 +3,12 @@
 ## GOOD MODELS
 # lmsys/vicuna-7b-v1.3
 # tiiuae/falcon-7b-instruct
+# meta-llama/Llama-2-7b-chat-hf
 
 # generation options
-model = "tiiuae/falcon-7b-instruct" # model to use for generation
-max_size = 512 # maximum size of the input context
+model = "meta-llama/Llama-2-7b-chat-hf" # model to use for generation
+context_size = 512 # maximum size of the input context
+batch_size = 4 # number of samples to generate in parallel
+
+# embedding specific
+embed = 'paraphrase-MiniLM-L6-v2'

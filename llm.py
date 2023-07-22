@@ -1,6 +1,7 @@
 ## LLM embedding, generation, and indexing code
 
 import os
+import re
 import torch
 import torch.nn.functional as F
 
@@ -129,10 +130,21 @@ class HuggingfaceModel:
 class HuggingfaceEmbedding:
     def __init__(self, model=config.embed, **kwargs):
         self.model = SentenceTransformer(model, device='cuda', **kwargs)
+        self.maxlen = self.model.get_max_seq_length()
         self.dims = self.model.get_sentence_embedding_dimension()
 
-    def embed(self, text):
-        vecs = self.model.encode(text, convert_to_numpy=False, convert_to_tensor=True)
+    def embed(self, text, **kwargs):
+        args = dict(convert_to_numpy=False, convert_to_tensor=True, **kwargs)
+
+        # handle unit case
+        if type(text) is str:
+            text = [text]
+
+        # split into chunks and embed
+        chunks = [length_splitter(t, self.maxlen) for t in text]
+        vecs = torch.stack([self.model.encode(t, **args).mean(0) for t in chunks])
+
+        # return normalized vectors
         return F.normalize(vecs, dim=-1)
 
 class VectorIndex:
@@ -248,13 +260,10 @@ def length_splitter(text, max_length):
         return [text]
 
 # default paragraph splitter
-def paragraph_splitter(text, max_length):
-    paras = [
-        para for para in text.split('\n\n') if len(para.strip()) > 0
+def paragraph_splitter(text):
+    return [
+        para for para in re.split('\n{2,}', text) if len(para.strip()) > 0
     ]
-    return list(chain.from_iterable(
-        length_splitter(para, max_length) for para in paras
-    ))
 
 # group tuples by first element
 def groupby_dict(tups, idx=0):
@@ -281,7 +290,7 @@ class FilesystemDatabase:
         self.model = HuggingfaceModel(model) if type(model) is str else model
         self.embed = HuggingfaceEmbedding(embed) if type(embed) is str else embed
         self.index = index if index is not None else TorchVectorIndex(self.embed.dims)
-        self.splitter = lambda c: splitter(c, context_size)
+        self.splitter = splitter
         self.batch_size = batch_size
         self.reindex()
 
@@ -290,16 +299,15 @@ class FilesystemDatabase:
         self.index.clear()
 
         # get files in directory
-        self.names = sorted(os.listdir(self.path))
 
         # read in all files and split into chunks
-        paths = [os.path.join(self.path, x) for x in self.names]
-        text = [robust_read(x) for x in paths]
-        self.chunks = [self.splitter(x) for x in text]
+        names = sorted(os.listdir(self.path))
+        text = {n: robust_read(os.path.join(self.path, n)) for n in names}
+        self.chunks = {k: self.splitter(v) for k, v in text.items()}
 
         # flatten file chunks and make labels
-        labels = [(i, j) for i, c in enumerate(self.chunks) for j in range(len(c))]
-        chunks = list(chain.from_iterable(self.chunks))
+        labels = [(n, j) for n, c in self.chunks.items() for j in range(len(c))]
+        chunks = list(chain.from_iterable(self.chunks.values()))
 
         # embed chunks with chosen batch_size
         indices = batch_indices(len(chunks), self.batch_size)
@@ -316,7 +324,7 @@ class FilesystemDatabase:
 
         # group by document and filter by cutoff
         locs = groupby_dict([l for l, v in match if v > cutoff])
-        text = {self.names[k]: [self.chunks[k][i] for i in v] for k, v in locs.items()}
+        text = {k: [self.chunks[k][i] for i in v] for k, v in locs.items()}
 
         # return text
         return text

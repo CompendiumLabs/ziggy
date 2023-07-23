@@ -30,6 +30,13 @@ def llama_chat(query, system_prompt, **kwargs):
 def sprint(s):
     print(s, end='', flush=True)
 
+# cumsum generator
+def cumul_bounds(seq):
+    total = 0
+    for item in seq:
+        yield total, total+item
+        total += item
+
 # sampler for manual generation
 def sample(logits, top_k=None, temp=1.0):
     # only sample amongst top_k if given
@@ -91,7 +98,7 @@ class HuggingfaceModel:
         return F.normalize(embed, dim=-1)
 
     # proper python generator variant that uses model.__call__ directly
-    def generate(self, prompt, chat=True, max_new_tokens=200, top_k=10, temp=1.0):
+    def generate(self, prompt, chat=True, maxlen=200, top_k=10, temp=1.0):
         # splice in chat instructions
         if chat is not False:
             system_prompt = DEFAULT_SYSTEM_PROMPT if chat is True else chat
@@ -105,7 +112,7 @@ class HuggingfaceModel:
             input_ids = input_ids[:,:self.context_size]
 
         # loop until limit and eos token
-        for i in range(max_new_tokens):
+        for i in range(maxlen):
             # generate next logits (no grad for memory usage)
             with torch.no_grad():
                 output = self.model(input_ids)
@@ -134,7 +141,11 @@ class HuggingfaceEmbedding:
         self.dims = self.model.get_sentence_embedding_dimension()
 
     def embed(self, text, **kwargs):
-        args = dict(convert_to_numpy=False, convert_to_tensor=True, **kwargs)
+        # handle default args
+        args = dict(
+            convert_to_numpy=False, convert_to_tensor=True,
+            normalize_embeddings=True, **kwargs
+        )
 
         # handle unit case
         if type(text) is str:
@@ -142,10 +153,14 @@ class HuggingfaceEmbedding:
 
         # split into chunks and embed
         chunks = [length_splitter(t, self.maxlen) for t in text]
-        vecs = torch.stack([self.model.encode(t, **args).mean(0) for t in chunks])
+        bounds = cumul_bounds([len(c) for c in chunks])
+
+        # embed chunks and average
+        vecs = self.model.encode(list(chain(*chunks)), **args)
+        means = torch.stack([vecs[i:j,:].mean(0) for i, j in bounds])
 
         # return normalized vectors
-        return F.normalize(vecs, dim=-1)
+        return means
 
 class VectorIndex:
     def __init__(self, dims, dtype=torch.float32, device='cuda'):
@@ -298,8 +313,6 @@ class FilesystemDatabase:
         # clear existing entries
         self.index.clear()
 
-        # get files in directory
-
         # read in all files and split into chunks
         names = sorted(os.listdir(self.path))
         text = {n: robust_read(os.path.join(self.path, n)) for n in names}
@@ -307,7 +320,7 @@ class FilesystemDatabase:
 
         # flatten file chunks and make labels
         labels = [(n, j) for n, c in self.chunks.items() for j in range(len(c))]
-        chunks = list(chain.from_iterable(self.chunks.values()))
+        chunks = list(chain(*self.chunks.values()))
 
         # embed chunks with chosen batch_size
         indices = batch_indices(len(chunks), self.batch_size)
@@ -329,7 +342,7 @@ class FilesystemDatabase:
         # return text
         return text
 
-    def query(self, query, **kwargs):
+    def query(self, query, maxlen=500, **kwargs):
         # search db and get some context
         matches = self.search(query, **kwargs)
         chunks = {k: '; '.join(v) for k, v in matches.items()}
@@ -341,9 +354,13 @@ class FilesystemDatabase:
         user = f'NOTES:\n{context}\n\nQUESTION: {query}'
 
         # generate response
-        yield from self.model.generate(user, chat=system)
+        yield from self.model.generate(user, chat=system, maxlen=maxlen)
+
+    def iquery(self, query, **kwargs):
+        for s in self.query(query, **kwargs):
+            sprint(s)
 
 # example usage
-# gen = HuggingfaceModel('tiiuae/falcon-7b-instruct')
-# for s in gen.generator('Write a poem about Valencia.'):
-#     sprint(s)
+# model = HuggingfaceModel('meta-llama/Llama-2-7b-chat-hf')
+# db = FilesystemDatabase('notes', model=model)
+# db.iquery('Give me a concise summary of my research ideas')

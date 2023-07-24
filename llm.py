@@ -15,7 +15,6 @@ from utils import Bundle
 
 # load config
 config = Bundle.from_toml('config.toml')
-auth = Bundle.from_toml('auth.toml')
 
 # llama special strings
 B_INST, E_INST = "[INST]", "[/INST]"
@@ -62,7 +61,6 @@ class HuggingfaceModel:
         self.tokenizer.pad_token = self.tokenizer.eos_token
 
         # load model code and weights
-        self.context_size = context_size
         self.modconf = AutoConfig.from_pretrained(
             model, output_hidden_states=True, pretraining_tp=1, token=True
         )
@@ -73,29 +71,13 @@ class HuggingfaceModel:
         )
 
         # get embedding dimension
-        self.dims = self.model.config.hidden_size
+        self.context_size = context_size
 
     def encode(self, text):
         data = self.tokenizer(
             text, return_tensors='pt', padding=True, truncation=True
         )
         return data['input_ids'].to('cuda'), data['attention_mask'].to('cuda')
-
-    def embed(self, text):
-        # encode input text
-        input_ids, attn_mask = self.encode(text)
-
-        # get model output (no grad for memory usage)
-        with torch.no_grad():
-            output = self.model(input_ids)
-
-        # get masked embedding
-        state = output.hidden_states[0]
-        mask = attn_mask.float().unsqueeze(-1)
-        embed = (state*mask).sum(1)/mask.sum(1)
-
-        # return normalized embedding
-        return F.normalize(embed, dim=-1)
 
     # proper python generator variant that uses model.__call__ directly
     def generate(self, prompt, chat=True, maxlen=200, top_k=10, temp=1.0):
@@ -135,8 +117,8 @@ class HuggingfaceModel:
             input_ids = torch.cat((input_ids[:,trim:], index.unsqueeze(1)), dim=1)
 
 class HuggingfaceEmbedding:
-    def __init__(self, model=config.embed, **kwargs):
-        self.model = SentenceTransformer(model, device='cuda', **kwargs)
+    def __init__(self, model=config.embed, device=config.device, **kwargs):
+        self.model = SentenceTransformer(model, device=device, **kwargs)
         self.maxlen = self.model.get_max_seq_length()
         self.dims = self.model.get_sentence_embedding_dimension()
 
@@ -162,24 +144,27 @@ class HuggingfaceEmbedding:
         # return normalized vectors
         return means
 
-class VectorIndex:
-    def __init__(self, dims, dtype=torch.float32, device='cuda'):
-        self.dims = dims
-        self.dtype = dtype
-        self.device = device
-
-class TorchVectorIndex(VectorIndex):
-    def __init__(self, dims, max_size=1024, dtype=torch.float32, device='cuda'):
+class TorchVectorIndex:
+    def __init__(self, dims, max_size=1024, load=None):
+        # set options
         assert(log2(max_size) % 1 == 0)
-        super().__init__(dims, dtype=dtype, device=device)
-
-        # empty state
         self.max_size = max_size
-        self.labels = []
-        self.values = torch.empty(max_size, dims, dtype=dtype, device=device)
+
+        # init state
+        if load is not None:
+            self.load(load)
+        else:
+            self.labels = []
+            self.values = torch.empty(max_size, dims, device='cuda')
 
     def size(self):
         return len(self.labels)
+
+    def load(self, path):
+        pass
+
+    def save(self, path):
+        pass
 
     def expand(self, min_size):
         # check if needed
@@ -299,15 +284,23 @@ def batch_indices(length, batch_size):
 class FilesystemDatabase:
     def __init__(
             self, path, model=config.model, embed=config.embed, index=None, splitter=paragraph_splitter,
-            context_size=config.context_size, batch_size=config.batch_size
+            context_size=config.context_size, batch_size=config.batch_size, load=None
         ):
+        # set options
         self.path = path
+        self.splitter = splitter
+        self.batch_size = batch_size
+
+        # instantiate model and embedding
         self.model = HuggingfaceModel(model) if type(model) is str else model
         self.embed = HuggingfaceEmbedding(embed) if type(embed) is str else embed
         self.index = index if index is not None else TorchVectorIndex(self.embed.dims)
-        self.splitter = splitter
-        self.batch_size = batch_size
-        self.reindex()
+
+        # load if given
+        if load is not None:
+            self.load(load)
+        else:
+            self.reindex()
 
     def reindex(self):
         # clear existing entries
@@ -328,6 +321,12 @@ class FilesystemDatabase:
 
         # add to the index
         self.index.add(labels, embeds)
+
+    def load(self, path):
+        pass
+
+    def save(self, path):
+        pass
 
     def search(self, query, k=10, cutoff=0.0):
         # get relevant chunks

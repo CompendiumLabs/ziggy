@@ -55,7 +55,12 @@ def convert_sentencepice(toks):
     ])
 
 class HuggingfaceModel:
-    def __init__(self, model=config.model, context_size=config.context_size, **kwargs):
+    def __init__(
+        self, model=config.model, context_size=config.context_size, device=config.device, **kwargs
+    ):
+        # set options
+        self.device = device
+
         # load tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(model, token=True)
         self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -67,7 +72,7 @@ class HuggingfaceModel:
         self.model = AutoModelForCausalLM.from_pretrained(
             model, device_map='auto', trust_remote_code=True, load_in_4bit=True,
             bnb_4bit_compute_dtype=torch.bfloat16, token=True, config=self.modconf,
-            **kwargs
+            device=device, **kwargs
         )
 
         # get embedding dimension
@@ -77,7 +82,7 @@ class HuggingfaceModel:
         data = self.tokenizer(
             text, return_tensors='pt', padding=True, truncation=True
         )
-        return data['input_ids'].to('cuda'), data['attention_mask'].to('cuda')
+        return data['input_ids'].to(self.device), data['attention_mask'].to(self.device)
 
     # proper python generator variant that uses model.__call__ directly
     def generate(self, prompt, chat=True, maxlen=200, top_k=10, temp=1.0):
@@ -116,6 +121,9 @@ class HuggingfaceModel:
             trim = 1 if input_ids.size(1) == self.context_size else 0
             input_ids = torch.cat((input_ids[:,trim:], index.unsqueeze(1)), dim=1)
 
+class LlamaCppModel:
+    pass
+
 class HuggingfaceEmbedding:
     def __init__(self, model=config.embed, device=config.device, **kwargs):
         self.model = SentenceTransformer(model, device=device, **kwargs)
@@ -145,17 +153,18 @@ class HuggingfaceEmbedding:
         return means
 
 class TorchVectorIndex:
-    def __init__(self, dims, max_size=1024, load=None):
+    def __init__(self, dims, max_size=1024, load=None, device=config.device):
         # set options
         assert(log2(max_size) % 1 == 0)
         self.max_size = max_size
+        self.device = device
 
         # init state
         if load is not None:
             self.load(load)
         else:
             self.labels = []
-            self.values = torch.empty(max_size, dims, device='cuda')
+            self.values = torch.empty(max_size, dims, device=device)
 
     def size(self):
         return len(self.labels)
@@ -177,9 +186,7 @@ class TorchVectorIndex:
         self.max_size = pow(2, round(ceil(log2(min_size))))
 
         # create new tensor and assign old values
-        self.values = torch.empty(
-            self.max_size, self.dims, dtype=self.dtype, device=self.device
-        )
+        self.values = torch.empty(self.max_size, self.dims, device=self.device)
         self.values[:nlabels,:] = values_old[:nlabels,:]
 
     def add(self, labs, vecs, strict=False):

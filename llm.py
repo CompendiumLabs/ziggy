@@ -56,7 +56,7 @@ def convert_sentencepice(toks):
 
 class HuggingfaceModel:
     def __init__(
-        self, model=config.model, context_size=config.context_size, device=config.device, **kwargs
+        self, model=config.model, context_size=config.context_size, bits=config.bits, device=config.device, **kwargs
     ):
         # set options
         self.device = device
@@ -65,14 +65,31 @@ class HuggingfaceModel:
         self.tokenizer = AutoTokenizer.from_pretrained(model, token=True)
         self.tokenizer.pad_token = self.tokenizer.eos_token
 
+        # choose right decies
+        if device == 'cpu':
+            devargs = {'device_map': 'cpu'}
+        else:
+            devargs = {'device_map': 'auto'}
+
+        # choose right bits
+        if device == 'cuda' and bits == 4:
+            bitargs = {'load_in_4bit': True, 'bnb_4bit_compute_dtype': torch.bfloat16}
+        elif device == 'cuda' and bits == 8:
+            bitargs = {'load_in_8bit': True, 'bnb_8bit_compute_dtype': torch.bfloat16}
+        elif bits == 16:
+            bitargs = {'torch_dtype': torch.float16}
+        elif bits == 32:
+            bitargs = {'torch_dtype': torch.float32}
+        else:
+            raise Exception(f'Unsupported device/bits combination: {device}/{bits}')
+
         # load model code and weights
         self.modconf = AutoConfig.from_pretrained(
             model, output_hidden_states=True, pretraining_tp=1, token=True
         )
         self.model = AutoModelForCausalLM.from_pretrained(
-            model, device_map='auto', trust_remote_code=True, load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.bfloat16, token=True, config=self.modconf,
-            device=device, **kwargs
+            model, trust_remote_code=True, token=True, config=self.modconf,
+            **devargs, **bitargs, **kwargs
         )
 
         # get embedding dimension
@@ -158,6 +175,7 @@ class TorchVectorIndex:
         assert(log2(max_size) % 1 == 0)
         self.max_size = max_size
         self.device = device
+        self.dims = dims
 
         # init state
         if load is not None:
@@ -290,8 +308,8 @@ def batch_indices(length, batch_size):
 # index documents in a specified directory
 class FilesystemDatabase:
     def __init__(
-            self, path, model=config.model, embed=config.embed, index=None, splitter=paragraph_splitter,
-            context_size=config.context_size, batch_size=config.batch_size, load=None
+            self, path, model=config.model, embed=config.embed, index=None,
+            splitter=paragraph_splitter, batch_size=config.batch_size, load=None
         ):
         # set options
         self.path = path

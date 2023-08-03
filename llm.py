@@ -10,6 +10,7 @@ from operator import itemgetter
 from itertools import chain, groupby
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
 from sentence_transformers import SentenceTransformer
+from llama_cpp import Llama
 
 from utils import Bundle
 
@@ -56,7 +57,7 @@ def convert_sentencepice(toks):
 
 class HuggingfaceModel:
     def __init__(
-        self, model=config.model, context_size=config.context_size, bits=config.bits, device=config.device, **kwargs
+        self, model=config.model, device=config.device, bits=config.bits, **kwargs
     ):
         # set options
         self.device = device
@@ -92,9 +93,6 @@ class HuggingfaceModel:
             **devargs, **bitargs, **kwargs
         )
 
-        # get embedding dimension
-        self.context_size = context_size
-
     def encode(self, text):
         data = self.tokenizer(
             text, return_tensors='pt', padding=True, truncation=True
@@ -102,7 +100,7 @@ class HuggingfaceModel:
         return data['input_ids'].to(self.device), data['attention_mask'].to(self.device)
 
     # proper python generator variant that uses model.__call__ directly
-    def generate(self, prompt, chat=True, maxlen=200, top_k=10, temp=1.0):
+    def generate(self, prompt, chat=True, context=512, maxlen=512, top_k=10, temp=1.0):
         # splice in chat instructions
         if chat is not False:
             system_prompt = DEFAULT_SYSTEM_PROMPT if chat is True else chat
@@ -112,8 +110,8 @@ class HuggingfaceModel:
         input_ids, _ = self.encode(prompt)
 
         # trim if needed
-        if input_ids.size(1) > self.context_size:
-            input_ids = input_ids[:,:self.context_size]
+        if input_ids.size(1) > context:
+            input_ids = input_ids[:,:context]
 
         # loop until limit and eos token
         for i in range(maxlen):
@@ -135,11 +133,26 @@ class HuggingfaceModel:
             yield text.lstrip() if i <= 1 else text
 
             # shift and add to input_ids
-            trim = 1 if input_ids.size(1) == self.context_size else 0
+            trim = 1 if input_ids.size(1) == context else 0
             input_ids = torch.cat((input_ids[:,trim:], index.unsqueeze(1)), dim=1)
 
 class LlamaCppModel:
-    pass
+    def __init__(self, model_path, **kwargs):
+        self.model = Llama(model_path, **kwargs)
+
+    def generate(self, prompt, chat=True, context=512, maxlen=512, **kwargs):
+        # splice in chat instructions
+        if chat is not False:
+            system_prompt = DEFAULT_SYSTEM_PROMPT if chat is True else chat
+            prompt = llama_chat(prompt, system_prompt=system_prompt)
+
+        # construct stream object
+        stream = self.model(prompt, max_tokens=maxlen, stream=True, **kwargs)
+
+        # return generated tokens
+        for output in stream:
+            choice, *_ = output['choices']
+            yield choice['text']
 
 class HuggingfaceEmbedding:
     def __init__(self, model=config.embed, device=config.device, **kwargs):
@@ -366,19 +379,19 @@ class FilesystemDatabase:
         # return text
         return text
 
-    def query(self, query, maxlen=500, **kwargs):
+    def query(self, query, context=512, maxlen=512, **kwargs):
         # search db and get some context
         matches = self.search(query, **kwargs)
         chunks = {k: '; '.join(v) for k, v in matches.items()}
-        context = '\n'.join([f'{k}: {v}' for k, v in chunks.items()])
+        notes = '\n'.join([f'{k}: {v}' for k, v in chunks.items()])
 
         # construct prompt
         meta = 'Below is some relevant text from my person notes. Using a synthesis of your general knowledge and my notes, answer the question posed at the end concisely. Try to provide quotes from my notes as evidence when possible.'
         system = f'{DEFAULT_SYSTEM_PROMPT}\n\n{meta}'
-        user = f'NOTES:\n{context}\n\nQUESTION: {query}'
+        user = f'NOTES:\n{notes}\n\nQUESTION: {query}'
 
         # generate response
-        yield from self.model.generate(user, chat=system, maxlen=maxlen)
+        yield from self.model.generate(user, chat=system, context=context, maxlen=maxlen)
 
     def iquery(self, query, **kwargs):
         for s in self.query(query, **kwargs):

@@ -1,15 +1,9 @@
 # global configuration file
 
-## GOOD MODELS
-# lmsys/vicuna-7b-v1.3
-# tiiuae/falcon-7b-instruct
-# meta-llama/Llama-2-7b-chat-hf
-
-# generation options
+# model options
 model = "meta-llama/Llama-2-7b-chat-hf" # model to use for generation
-device = 'cuda' # default device for models and embeddings
-bits = 4 # default precision for model weight loading
-batch_size = 4 # number of samples to generate in parallel
+embed = 'paraphrase-MiniLM-L6-v2' # model to use for embeddings
 
-# embedding specific
-embed = 'paraphrase-MiniLM-L6-v2'
+# hardware options
+device = 'cuda' # default device for models and embeddings
+bits = 16 # default precision for model weight loading

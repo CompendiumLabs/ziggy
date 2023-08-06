@@ -2,12 +2,15 @@
 
 import os
 import re
-import torch
-import torch.nn.functional as F
+import json
 
-from math import ceil, log2
+from math import ceil, log2, inf
 from operator import itemgetter
 from itertools import chain, groupby
+from pathlib import Path
+
+import torch
+import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
 from sentence_transformers import SentenceTransformer
 from llama_cpp import Llama
@@ -17,10 +20,18 @@ from utils import Bundle
 # load config
 config = Bundle.from_toml('config.toml')
 
+##
+## Constants
+##
+
 # llama special strings
 B_INST, E_INST = "[INST]", "[/INST]"
 B_SYS, E_SYS = "<<SYS>>", "\n<</SYS>>"
 DEFAULT_SYSTEM_PROMPT = "You are a helpful and honest assistant. Always answer if you are able to. If a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information. Do not provide warnings about ethics, morality, or possible incorrectness."
+
+##
+## Utils
+##
 
 # generate a llama query
 def llama_chat(query, system_prompt, **kwargs):
@@ -54,6 +65,42 @@ def convert_sentencepice(toks):
     return ''.join([
         tok.replace('▁', ' ') if tok.startswith('▁') else tok.replace('<0x0A>', '\n') for tok in toks
     ])
+
+def next_power_of_2(x):
+    return pow(2, round(ceil(log2(x))))
+
+def length_splitter(text, max_length):
+    if (length := len(text)) > max_length:
+        nchunks = ceil(length/max_length)
+        starts = [i*max_length for i in range(nchunks)]
+        return [text[s:s+max_length] for s in starts]
+    else:
+        return [text]
+
+# default paragraph splitter
+def paragraph_splitter(text):
+    return [
+        para for para in re.split('\n{2,}', text) if len(para.strip()) > 0
+    ]
+
+# group tuples by first element
+def groupby_dict(tups, idx=0):
+    return {
+        i: [k for _, k in j] for i, j in groupby(tups, key=itemgetter(idx))
+    }
+
+# robust text reader (for encoding errors)
+def robust_read(path):
+    with open(path, 'r', errors='ignore') as fid:
+        return fid.read()
+
+# get batch indices
+def batch_indices(length, batch_size):
+    return [(i, min(i+batch_size, length)) for i in range(0, length, batch_size)]
+
+##
+## Models
+##
 
 class HuggingfaceModel:
     def __init__(
@@ -100,7 +147,7 @@ class HuggingfaceModel:
         return data['input_ids'].to(self.device), data['attention_mask'].to(self.device)
 
     # proper python generator variant that uses model.__call__ directly
-    def generate(self, prompt, chat=True, context=512, maxlen=512, top_k=10, temp=1.0):
+    def generate(self, prompt, chat=True, context=2048, maxlen=2048, top_k=10, temp=1.0):
         # splice in chat instructions
         if chat is not False:
             system_prompt = DEFAULT_SYSTEM_PROMPT if chat is True else chat
@@ -136,23 +183,30 @@ class HuggingfaceModel:
             trim = 1 if input_ids.size(1) == context else 0
             input_ids = torch.cat((input_ids[:,trim:], index.unsqueeze(1)), dim=1)
 
+# this has to take context at creation time
+# NOTE: llama2-70b needs n_gqa=8
 class LlamaCppModel:
-    def __init__(self, model_path, **kwargs):
-        self.model = Llama(model_path, **kwargs)
+    def __init__(self, model_path, context=2048, n_gpu_layers=100, **kwargs):
+        self.model = Llama(model_path, n_ctx=context, n_gpu_layers=n_gpu_layers, **kwargs)
 
-    def generate(self, prompt, chat=True, context=512, maxlen=512, **kwargs):
+    def generate(self, prompt, chat=True, context=None, maxlen=512, top_k=10, temp=1.0, **kwargs):
         # splice in chat instructions
         if chat is not False:
             system_prompt = DEFAULT_SYSTEM_PROMPT if chat is True else chat
             prompt = llama_chat(prompt, system_prompt=system_prompt)
 
         # construct stream object
-        stream = self.model(prompt, max_tokens=maxlen, stream=True, **kwargs)
+        stream = self.model(prompt, max_tokens=maxlen, stream=True, top_k=top_k, temperature=temp, **kwargs)
 
         # return generated tokens
-        for output in stream:
+        for i, output in enumerate(stream):
             choice, *_ = output['choices']
-            yield choice['text']
+            text = choice['text']
+            yield text.lstrip() if i <= 1 else text
+
+##
+## Embeddings
+##
 
 class HuggingfaceEmbedding:
     def __init__(self, model=config.embed, device=config.device, **kwargs):
@@ -182,18 +236,22 @@ class HuggingfaceEmbedding:
         # return normalized vectors
         return means
 
+##
+## Indices
+##
+
 class TorchVectorIndex:
-    def __init__(self, dims, max_size=1024, load=None, device=config.device):
+    def __init__(self, dims=None, max_size=1024, load=None, device=config.device):
         # set options
         assert(log2(max_size) % 1 == 0)
         self.max_size = max_size
         self.device = device
-        self.dims = dims
 
         # init state
         if load is not None:
             self.load(load)
         else:
+            self.dims = dims
             self.labels = []
             self.values = torch.empty(max_size, dims, device=device)
 
@@ -201,10 +259,27 @@ class TorchVectorIndex:
         return len(self.labels)
 
     def load(self, path):
-        pass
+        # load in data
+        data = torch.load(path)
+
+        # get sizes and validate
+        size = len(data['labels'])
+        size1, self.dims = data['values'].shape
+        assert(size == size1)
+
+        # allocate values tensor
+        self.max_size = max(self.max_size, next_power_of_2(size))
+        self.values = torch.empty(self.max_size, self.dims, device=self.device)
+
+        # set values in place
+        self.labels = data['labels']
+        self.values[:size,:] = data['values']
 
     def save(self, path):
-        pass
+        data = {
+            'labels': self.labels, 'values': self.values[:self.size(),:]
+        }
+        torch.save(data, path)
 
     def expand(self, min_size):
         # check if needed
@@ -214,11 +289,21 @@ class TorchVectorIndex:
         # increase size to next power of 2
         nlabels = self.size()
         values_old = self.values
-        self.max_size = pow(2, round(ceil(log2(min_size))))
+        self.max_size = next_power_of_2(min_size)
 
         # create new tensor and assign old values
         self.values = torch.empty(self.max_size, self.dims, device=self.device)
         self.values[:nlabels,:] = values_old[:nlabels,:]
+
+    def compress(self, min_size=1024):
+        # get target size
+        size2 = next_power_of_2(self.size())
+        size = max(min_size, size2)
+
+        # compress if larger
+        if size < self.max_size:
+            self.max_size = size
+            self.values = self.values[:size,:]
 
     def add(self, labs, vecs, strict=False):
         # validate input size
@@ -258,8 +343,12 @@ class TorchVectorIndex:
             self.labels.extend(xlabs)
             self.values[nlabels0:nlabels1,:] = vecs[xlocs,:]
 
-    def remove(self, labs):
-        pass
+    def remove(self, labs=None, func=None):
+        labs = [l for l in self.labels if func(l)] if func is not None else labs
+        for lab in set(labs).intersection(self.labels):
+            idx = self.labels.index(lab)
+            self.labels.pop(idx)
+            self.values[idx,:] = self.values[self.size(),:]
 
     def clear(self):
         self.labels = []
@@ -289,65 +378,25 @@ class TorchVectorIndex:
         # return labels/simils
         return labs, vals if return_simil else labs
 
-def length_splitter(text, max_length):
-    if (length := len(text)) > max_length:
-        nchunks = ceil(length/max_length)
-        starts = [i*max_length for i in range(nchunks)]
-        return [text[s:s+max_length] for s in starts]
-    else:
-        return [text]
+##
+## Databases
+##
 
-# default paragraph splitter
-def paragraph_splitter(text):
-    return [
-        para for para in re.split('\n{2,}', text) if len(para.strip()) > 0
-    ]
-
-# group tuples by first element
-def groupby_dict(tups, idx=0):
-    return {
-        i: [k for _, k in j] for i, j in groupby(tups, key=itemgetter(idx))
-    }
-
-# robust text reader (for encoding errors)
-def robust_read(path):
-    with open(path, 'r', errors='ignore') as fid:
-        return fid.read()
-
-# get batch indices
-def batch_indices(length, batch_size):
-    return [(i, min(i+batch_size, length)) for i in range(0, length, batch_size)]
-
-# index documents in a specified directory
-class FilesystemDatabase:
+class DocumentDatabase:
     def __init__(
-            self, path, model=config.model, embed=config.embed, index=None,
-            splitter=paragraph_splitter, batch_size=config.batch_size, load=None
+            self, model=config.model, embed=config.embed, splitter=paragraph_splitter,
+            index=None, **kwargs
         ):
-        # set options
-        self.path = path
-        self.splitter = splitter
-        self.batch_size = batch_size
-
         # instantiate model and embedding
-        self.model = HuggingfaceModel(model) if type(model) is str else model
+        self.model = HuggingfaceModel(model, **kwargs) if type(model) is str else model
         self.embed = HuggingfaceEmbedding(embed) if type(embed) is str else embed
+
+        # initalize index
+        self.splitter = splitter
         self.index = index if index is not None else TorchVectorIndex(self.embed.dims)
 
-        # load if given
-        if load is not None:
-            self.load(load)
-        else:
-            self.reindex()
-
-    def reindex(self):
-        # clear existing entries
-        self.index.clear()
-
-        # read in all files and split into chunks
-        names = sorted(os.listdir(self.path))
-        text = {n: robust_read(os.path.join(self.path, n)) for n in names}
-        self.chunks = {k: self.splitter(v) for k, v in text.items()}
+    def index_docs(self, texts):
+        self.chunks = {k: self.splitter(v) for k, v in texts.items()}
 
         # flatten file chunks and make labels
         labels = [(n, j) for n, c in self.chunks.items() for j in range(len(c))]
@@ -359,12 +408,6 @@ class FilesystemDatabase:
 
         # add to the index
         self.index.add(labels, embeds)
-
-    def load(self, path):
-        pass
-
-    def save(self, path):
-        pass
 
     def search(self, query, k=10, cutoff=0.0):
         # get relevant chunks
@@ -379,7 +422,7 @@ class FilesystemDatabase:
         # return text
         return text
 
-    def query(self, query, context=512, maxlen=512, **kwargs):
+    def query(self, query, context=2048, maxlen=2048, **kwargs):
         # search db and get some context
         matches = self.search(query, **kwargs)
         chunks = {k: '; '.join(v) for k, v in matches.items()}
@@ -396,6 +439,62 @@ class FilesystemDatabase:
     def iquery(self, query, **kwargs):
         for s in self.query(query, **kwargs):
             sprint(s)
+
+# index documents in a specified directory
+class FilesystemDatabase(DocumentDatabase):
+    def __init__(self, path, batch_size=1024, **kwargs):
+        super().__init__(**kwargs)
+        self.path = Path(path)
+        self.batch_size = batch_size
+        self.reindex()
+
+    def get_names(self):
+        return sorted(os.listdir(self.path))
+
+    def get_mtime(self, name):
+        return os.path.getmtime(self.path / name)
+
+    def get_text(self, name):
+        return robust_read(self.path / name)
+
+    def clear(self, names=None):
+        names = self.get_names() if names is None else names
+        self.index.remove(func=lambda x: x[0] in names)
+
+    def reindex(self, names=None):
+        # default to all names and clear
+        names = self.get_names() if names is None else names
+        self.clear(names=names)
+
+        # get new modified times and read chunks
+        self.times = {n: self.get_mtime(n) for n in names}
+        texts = {n: self.get_text(n) for n in names}
+
+        # index new docs
+        self.index_docs(texts)
+
+    def refresh(self):
+        update = [
+            name for name in self.get_names() if self.get_mtime(name) > self.times.get(name, -inf)
+        ]
+        self.reindex(names=update)
+
+class JsonDatabase(DocumentDatabase):
+    def __init__(self, path, name_col, text_col, **kwargs):
+        super().__init__(**kwargs)
+        self.path = Path(path)
+        self.name_col = name_col
+        self.text_col = text_col
+        self.reindex()
+
+    def reindex(self):
+        # load in json file
+        with open(self.path) as fid:
+            data = json.load(fid)
+
+        # index new docs
+        texts = {row[self.name_col]: row[self.text_col] for row in data}
+        self.index_docs(texts)
 
 # example usage
 # model = HuggingfaceModel('meta-llama/Llama-2-7b-chat-hf')

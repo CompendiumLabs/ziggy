@@ -6,9 +6,10 @@ import json
 
 from math import ceil, log2, inf
 from operator import itemgetter
-from itertools import chain, groupby
+from itertools import chain, groupby, islice
 from pathlib import Path
 
+import faiss
 import torch
 import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
@@ -78,10 +79,9 @@ def length_splitter(text, max_length):
         return [text]
 
 # default paragraph splitter
-def paragraph_splitter(text):
-    return [
-        para for para in re.split('\n{2,}', text) if len(para.strip()) > 0
-    ]
+def paragraph_splitter(text, delim='\n{2,}', minlen=1):
+    paras = [para.strip() for para in re.split(delim, text)]
+    return [para for para in paras if len(para) >= minlen]
 
 # group tuples by first element
 def groupby_dict(tups, idx=0):
@@ -241,11 +241,12 @@ class HuggingfaceEmbedding:
 ##
 
 class TorchVectorIndex:
-    def __init__(self, dims=None, max_size=1024, load=None, device=config.device):
+    def __init__(self, dims=None, max_size=1024, load=None, device=config.device, dtype=torch.float16):
         # set options
         assert(log2(max_size) % 1 == 0)
         self.max_size = max_size
         self.device = device
+        self.dtype = dtype
 
         # init state
         if load is not None:
@@ -253,7 +254,7 @@ class TorchVectorIndex:
         else:
             self.dims = dims
             self.labels = []
-            self.values = torch.empty(max_size, dims, device=device)
+            self.values = torch.empty(max_size, dims, device=device, dtype=dtype)
 
     def size(self):
         return len(self.labels)
@@ -269,7 +270,7 @@ class TorchVectorIndex:
 
         # allocate values tensor
         self.max_size = max(self.max_size, next_power_of_2(size))
-        self.values = torch.empty(self.max_size, self.dims, device=self.device)
+        self.values = torch.empty(self.max_size, self.dims, device=self.device, dtype=self.dtype)
 
         # set values in place
         self.labels = data['labels']
@@ -292,7 +293,7 @@ class TorchVectorIndex:
         self.max_size = next_power_of_2(min_size)
 
         # create new tensor and assign old values
-        self.values = torch.empty(self.max_size, self.dims, device=self.device)
+        self.values = torch.empty(self.max_size, self.dims, device=self.device, dtype=self.dtype)
         self.values[:nlabels,:] = values_old[:nlabels,:]
 
     def compress(self, min_size=1024):
@@ -378,35 +379,99 @@ class TorchVectorIndex:
         # return labels/simils
         return labs, vals if return_simil else labs
 
+# this won't handle deletion
+class FaissIndex:
+    def __init__(self, dims, spec='Flat', device='cuda'):
+        self.dims = dims
+        self.labels = []
+        self.values = faiss.index_factory(dims, spec)
+
+        # move to gpu if needed
+        if device == 'cuda':
+            res = faiss.StandardGpuResources()
+            self.values = faiss.index_cpu_to_gpu(res, 0, self.values)
+
+    def size(self):
+        return len(self.labels)
+
+    def add(self, labs, vecs):
+        # validate input size
+        nlabs = len(labs)
+        nv, dv = vecs.shape
+        assert(nv == nlabs)
+        assert(dv == self.dims)
+
+        # reject adding existing labels
+        exist = set(labs).intersection(self.labels)
+        if len(exist) > 0:
+            raise Exception(f'Adding existing labels not supported.')
+
+        # construct label ids
+        size0 = self.size()
+        size1 = size0 + nlabs
+        ids = torch.arange(size0, size1)
+
+        # add to index
+        self.labels.extend(labs)
+        self.values.add(vecs)
+
+    def search(self, vecs, k, return_simil=True):
+        # allow for single vec
+        squeeze = vecs.ndim == 1
+        if squeeze:
+            vecs = vecs.unsqueeze(0)
+
+        # exectute search
+        vals, ids = self.values.search(vecs, k)
+        labs = [[self.labels[i] for i in row] for row in ids]
+
+        # return single vec if needed
+        if squeeze:
+            labs, vals = labs[0], vals[0]
+
+        # return labels/simils
+        return labs, vals if return_simil else labs
+
 ##
 ## Databases
 ##
 
+# data storage:
+# chunks: dict {name: [chunk1, chunk2, ...]}
+# index: TorchVectorIndex {(name, chunk_idx): vec}
 class DocumentDatabase:
     def __init__(
-            self, model=config.model, embed=config.embed, splitter=paragraph_splitter,
-            index=None, **kwargs
+            self, model=config.model, embed=config.embed, index=None,
+            delim='\n{2,}', minlen=1, batch_size=8192, **kwargs
         ):
         # instantiate model and embedding
         self.model = HuggingfaceModel(model, **kwargs) if type(model) is str else model
         self.embed = HuggingfaceEmbedding(embed) if type(embed) is str else embed
 
+        # set up options
+        self.splitter = lambda s: paragraph_splitter(s, delim=delim, minlen=minlen)
+        self.batch_size = batch_size
+
         # initalize index
-        self.splitter = splitter
+        self.chunks = {}
         self.index = index if index is not None else TorchVectorIndex(self.embed.dims)
 
     def index_docs(self, texts):
-        self.chunks = {k: self.splitter(v) for k, v in texts.items()}
-
-        # flatten file chunks and make labels
-        labels = [(n, j) for n, c in self.chunks.items() for j in range(len(c))]
-        chunks = list(chain(*self.chunks.values()))
+        # split into chunks dict
+        targ = texts.items() if type(texts) is dict else texts
+        chunks = {k: self.splitter(v) for k, v in targ}
+        labels = [(n, j) for n, c in chunks.items() for j in range(len(c))]
 
         # embed chunks with chosen batch_size
-        indices = batch_indices(len(chunks), self.batch_size)
-        embeds = torch.cat([self.embed.embed(chunks[i1:i2]) for i1, i2 in indices], dim=0)
+        nchunks = sum([len(c) for c in chunks.values()])
+        nbatch = int(ceil(nchunks/self.batch_size))
+        chunk_iter = chain(*chunks.values())
+        embeds = torch.cat([
+            self.embed.embed(islice(chunk_iter, self.batch_size)) for i in range(nbatch)
+        ], dim=0)
 
-        # add to the index
+        # add to the text and index
+        self.chunks.update(chunks)
         self.index.add(labels, embeds)
 
     def search(self, query, k=10, cutoff=0.0):
@@ -442,10 +507,9 @@ class DocumentDatabase:
 
 # index documents in a specified directory
 class FilesystemDatabase(DocumentDatabase):
-    def __init__(self, path, batch_size=1024, **kwargs):
+    def __init__(self, path, **kwargs):
         super().__init__(**kwargs)
         self.path = Path(path)
-        self.batch_size = batch_size
         self.reindex()
 
     def get_names(self):
@@ -462,41 +526,39 @@ class FilesystemDatabase(DocumentDatabase):
         self.index.remove(func=lambda x: x[0] in names)
 
     def reindex(self, names=None):
-        # default to all names and clear
         names = self.get_names() if names is None else names
         self.clear(names=names)
-
-        # get new modified times and read chunks
         self.times = {n: self.get_mtime(n) for n in names}
-        texts = {n: self.get_text(n) for n in names}
+        self.index_docs((n, self.get_text(n)) for n in names)
 
-        # index new docs
-        self.index_docs(texts)
-
-    def refresh(self):
+    def refresh(self, names=None):
+        names = self.get_names() if names is None else names
         update = [
-            name for name in self.get_names() if self.get_mtime(name) > self.times.get(name, -inf)
+            name for name in names if self.get_mtime(name) > self.times.get(name, -inf)
         ]
         self.reindex(names=update)
 
-class JsonDatabase(DocumentDatabase):
-    def __init__(self, path, name_col, text_col, **kwargs):
+def stream_jsonl(path):
+    with open(path) as fid:
+        for line in fid:
+            yield json.loads(line)
+
+def batch_generator(gen, batch_size):
+    while (batch := list(islice(gen, batch_size))) != []:
+        yield batch
+
+class JsonlDatabase(DocumentDatabase):
+    def __init__(self, path, name_col='title', text_col='text', doc_batch=512, **kwargs):
         super().__init__(**kwargs)
         self.path = Path(path)
         self.name_col = name_col
         self.text_col = text_col
+        self.doc_batch = doc_batch
         self.reindex()
 
     def reindex(self):
-        # load in json file
-        with open(self.path) as fid:
-            data = json.load(fid)
-
-        # index new docs
-        texts = {row[self.name_col]: row[self.text_col] for row in data}
-        self.index_docs(texts)
-
-# example usage
-# model = HuggingfaceModel('meta-llama/Llama-2-7b-chat-hf')
-# db = FilesystemDatabase('notes', model=model)
-# db.iquery('Give me a concise summary of my research ideas')
+        for batch in batch_generator(stream_jsonl(self.path), self.doc_batch):
+            self.index_docs(
+                (row[self.name_col], row[self.text_col]) for row in batch
+            )
+            print('█', end='', flush=True)

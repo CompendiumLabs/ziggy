@@ -1,7 +1,30 @@
 # general utilities
 
+from typing import Any
 import toml
 import operator
+
+class IndexedDict(dict):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._index = {k: i for i, k in enumerate(self.keys())}
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        if key not in self._index:
+            self._index[key] = len(self._index)
+
+    def __delitem__(self, name):
+        super().__delitem__(name)
+        del self._index[name]
+
+    def update(self, *args, **kwargs):
+        for d in (*args, kwargs):
+            for k, v in d.items():
+                self[k] = v
+
+    def index(self, name):
+        return self._index[name]
 
 class Bundle(dict):
     def __init__(self, *args, **kwargs):

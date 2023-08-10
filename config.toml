@@ -1,9 +1,0 @@
-# global configuration file
-
-# model options
-model = "meta-llama/Llama-2-7b-chat-hf" # model to use for generation
-embed = 'paraphrase-MiniLM-L6-v2' # model to use for embeddings
-
-# hardware options
-device = 'cuda' # default device for models and embeddings
-bits = 16 # default precision for model weight loading

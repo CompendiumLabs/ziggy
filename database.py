@@ -16,7 +16,6 @@ from llm import (
     sprint, HuggingfaceModel, HuggingfaceEmbedding
 )
 from index import TorchVectorIndex
-from utils import IndexedDict
 
 ##
 ## Utils
@@ -70,7 +69,7 @@ class DocumentDatabase:
         self.batch_size = batch_size
 
         # initalize index
-        self.chunks = IndexedDict()
+        self.chunks = {}
         self.index = index if index is not None else TorchVectorIndex(self.embed.dims)
 
     @classmethod
@@ -107,6 +106,7 @@ class DocumentDatabase:
         targ = texts.items() if type(texts) is dict else texts
         chunks = {k: self.splitter(v) for k, v in targ}
         labels = [(n, j) for n, c in chunks.items() for j in range(len(c))]
+        groups = [n for n, _ in labels]
 
         # assess chunk information
         chunk_sizes = [len(c) for c in chunks.values()]
@@ -119,20 +119,14 @@ class DocumentDatabase:
             self.embed.embed(islice(chunk_iter, self.batch_size)) for i in range(nbatch)
         ], dim=0)
 
-        # update chunks and get group indices
+        # update chunks and add to index
         self.chunks.update(chunks)
-        chunk_groups = [self.chunks.index(n) for n in chunks]
-        groups = torch.tensor([
-            g for g, s in zip(chunk_groups, chunk_sizes) for _ in range(s)
-        ], dtype=torch.int32)
-
-        # add to the index
         self.index.add(labels, embeds, groups=groups)
 
-    def search(self, query, k=10, cutoff=0.0):
+    def search(self, query, k=10, groups=None, cutoff=0.0):
         # get relevant chunks
         qvec = self.embed.embed(query).squeeze()
-        labs, vecs = self.index.search(qvec, k)
+        labs, vecs = self.index.search(qvec, k, groups=groups)
         match = list(zip(labs, vecs.tolist()))
 
         # group by document and filter by cutoff

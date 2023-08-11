@@ -5,6 +5,8 @@ import torch
 
 from math import ceil, log2
 
+from utils import IndexDict
+
 ##
 ## Utils
 ##
@@ -36,6 +38,7 @@ class TorchVectorIndex:
         else:
             self.dims = dims
             self.labels = []
+            self.grpids = IndexDict()
             self.values = torch.empty(max_size, dims, device=device, dtype=dtype)
             self.groups = torch.empty(max_size, device=device, dtype=torch.int32)
 
@@ -58,6 +61,7 @@ class TorchVectorIndex:
 
         # set values in place
         self.labels = data['labels']
+        self.grpids = IndexDict(data['grpids'])
         self.values[:size,:] = data['values']
         self.groups[:size] = data['groups']
 
@@ -65,6 +69,7 @@ class TorchVectorIndex:
         size = self.size()
         data = {
             'labels': self.labels,
+            'grpids': dict(self.grpids),
             'values': self.values[:size,:],
             'groups': self.groups[:size]
         }
@@ -105,10 +110,8 @@ class TorchVectorIndex:
             raise Exception(f'Trying to add existing labels in strict mode.')
 
         # expand groups if needed
-        if type(groups) is int:
-            grps = torch.full((nlabs,), groups, device=self.device, dtype=torch.int32)
-        else:
-            grps = groups
+        self.grpids.add(groups)
+        gids = torch.tensor(self.grpids.idx(groups), device=self.device, dtype=torch.int32)
 
         if len(exist) > 0:
             # update existing
@@ -116,7 +119,7 @@ class TorchVectorIndex:
                 (i, self.labels.index(x)) for i, x in enumerate(labs) if x in exist
             ]))
             self.values[idxs,:] = vecs[elocs,:]
-            self.groups[idxs] = grps[elocs]
+            self.groups[idxs] = gids[elocs]
 
         if len(novel) > 0:
             # get new labels in input order
@@ -132,7 +135,7 @@ class TorchVectorIndex:
             # add in new labels and vectors
             self.labels.extend(xlabs)
             self.values[nlabels0:nlabels1,:] = vecs[xlocs,:]
-            self.groups[nlabels0:nlabels1] = grps[xlocs]
+            self.groups[nlabels0:nlabels1] = gids[xlocs]
 
     def remove(self, labs=None, func=None):
         labs = [l for l in self.labels if func(l)] if func is not None else labs
@@ -160,7 +163,8 @@ class TorchVectorIndex:
             labs = self.labels
             vals = self.values[:num,:]
         else:
-            sel = torch.isin(self.groups[:num], groups)
+            ids = torch.tensor(self.grpids.idx(groups), device=self.device, dtype=torch.int32)
+            sel = torch.isin(self.groups[:num], ids)
             idx = torch.nonzero(sel).squeeze()
             labs = [self.labels[i] for i in idx]
             vals = self.values[idx,:]

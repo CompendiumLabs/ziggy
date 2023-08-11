@@ -4,10 +4,21 @@ from typing import Any
 import toml
 import operator
 
+# use __reduce__ to handle pickle-dict malarky
 class IndexedDict(dict):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._index = {k: i for i, k in enumerate(self.keys())}
+
+    def __getstate__(self):
+        return (dict(self), self._index)
+
+    def __setstate__(self, state):
+        data, self._index = state
+        self.update(data)
+
+    def __reduce__(self):
+        return (IndexedDict, (), self.__getstate__())
 
     def __setitem__(self, key, value):
         super().__setitem__(key, value)

@@ -54,6 +54,7 @@ class TorchVectorIndex:
         # allocate values tensor
         self.max_size = max(self.max_size, next_power_of_2(size))
         self.values = torch.empty(self.max_size, self.dims, device=self.device, dtype=self.dtype)
+        self.groups = torch.empty(self.max_size, device=self.device, dtype=torch.int32)
 
         # set values in place
         self.labels = data['labels']

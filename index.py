@@ -93,7 +93,7 @@ class TorchVectorIndex:
             resize_alloc(self.values, size)
             resize_alloc(self.groups, size)
 
-    def add(self, labs, vecs, groups=-1, strict=False):
+    def add(self, labs, vecs, groups=None, strict=False):
         # validate input size
         nlabs = len(labs)
         nv, dv = vecs.shape
@@ -111,7 +111,11 @@ class TorchVectorIndex:
 
         # expand groups if needed
         self.grpids.add(groups)
-        gids = torch.tensor(self.grpids.idx(groups), device=self.device, dtype=torch.int32)
+        gidx = self.grpids.idx(groups)
+        if type(groups) is list:
+            gids = torch.tensor(gidx, device=self.device, dtype=torch.int32)
+        else:
+            gids = torch.full((nlabs,), gidx, device=self.device, dtype=torch.int32)
 
         if len(exist) > 0:
             # update existing

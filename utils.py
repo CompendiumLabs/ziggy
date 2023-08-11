@@ -4,16 +4,25 @@ from typing import Any
 import toml
 import operator
 
+def allow_list(func):
+    def wrapper(self, keys):
+        many = type(keys) is list
+        keys = keys if many else [keys]
+        rets = func(self, keys)
+        if rets is not None:
+            return rets if many else rets[0]
+    return wrapper
+
 class IndexDict(dict):
+    @allow_list
     def add(self, keys):
-        keys = keys if type(keys) is list else [keys]
         new = set(keys).difference(self)
         n0, n1 = len(self), len(new)
         ids = range(n0, n0 + n1)
         self.update(zip(new, ids))
 
+    @allow_list
     def idx(self, keys):
-        keys = keys if type(keys) is list else [keys]
         return [self[k] for k in keys]
 
 class Bundle(dict):

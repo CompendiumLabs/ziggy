@@ -8,8 +8,9 @@ import torch
 
 from math import ceil, inf
 from operator import itemgetter
-from itertools import chain, groupby, islice
+from itertools import chain, groupby, islice, accumulate
 from pathlib import Path
+from torch.nn.functional import normalize
 
 from llm import (
     DEFAULT_MODEL, DEFAULT_EMBED, DEFAULT_SYSTEM_PROMPT,
@@ -41,6 +42,15 @@ def robust_read(path):
 def batch_indices(length, batch_size):
     return [(i, min(i+batch_size, length)) for i in range(0, length, batch_size)]
 
+# cumulative sum
+def cumsum(lengths):
+    return list(chain([0], accumulate(lengths)))
+
+# get cumulative indices
+def cumul_indices(lengths):
+    sums = cumsum(lengths)
+    return [(i, j) for i, j in zip(sums[:-1], sums[1:])]
+
 # generate loader for jsonl file
 def stream_jsonl(path):
     with open(path) as fid:
@@ -57,7 +67,7 @@ def batch_generator(gen, batch_size):
 # index: TorchVectorIndex {(name, chunk_idx): vec}
 class DocumentDatabase:
     def __init__(
-            self, model=DEFAULT_MODEL, embed=DEFAULT_EMBED, index=None,
+            self, model=DEFAULT_MODEL, embed=DEFAULT_EMBED, index=TorchVectorIndex,
             delim='\n{2,}', minlen=1, batch_size=8192, **kwargs
         ):
         # instantiate model and embedding
@@ -70,7 +80,8 @@ class DocumentDatabase:
 
         # initalize index
         self.chunks = {}
-        self.index = index if index is not None else TorchVectorIndex(self.embed.dims)
+        self.cindex = index(self.embed.dims)
+        self.dindex = index(self.embed.dims)
 
     @classmethod
     def from_jsonl(
@@ -88,13 +99,15 @@ class DocumentDatabase:
         self = cls(**kwargs)
         data = torch.load(path)
         self.chunks = data['chunks']
-        self.index.load(data['index'])
+        self.cindex.load(data['cindex'])
+        self.dindex.load(data['dindex'])
         return self
 
     def save(self, path=None):
         data = {
             'chunks': self.chunks,
-            'index': self.index.save()
+            'cindex': self.cindex.save(),
+            'dindex': self.dindex.save()
         }
         if path is None:
             return data
@@ -105,6 +118,10 @@ class DocumentDatabase:
         # split into chunks dict
         targ = texts.items() if type(texts) is dict else texts
         chunks = {k: self.splitter(v) for k, v in targ}
+        chunks = {k: v for k, v in chunks.items() if len(v) > 0}
+
+        # get names and labels
+        names = list(chunks)
         labels = [(n, j) for n, c in chunks.items() for j in range(len(c))]
         groups = [n for n, _ in labels]
 
@@ -119,15 +136,22 @@ class DocumentDatabase:
             self.embed.embed(islice(chunk_iter, self.batch_size)) for i in range(nbatch)
         ], dim=0)
 
+        # make document level embeddings
+        docemb = normalize(torch.stack([
+            embeds[i:j,:].mean(0) for i, j in cumul_indices(chunk_sizes)
+        ], dim=0))
+
         # update chunks and add to index
         self.chunks.update(chunks)
-        self.index.add(labels, embeds, groups=groups)
+        self.cindex.add(labels, embeds, groups=groups)
+        self.dindex.add(names, docemb)
 
     def search(self, query, k=10, groups=None, cutoff=0.0):
         # get relevant chunks
         qvec = self.embed.embed(query).squeeze()
-        labs, vecs = self.index.search(qvec, k, groups=groups)
-        match = list(zip(labs, vecs.tolist()))
+        docs = self.dindex.search(qvec, k, return_simil=False)
+        labs, sims = self.cindex.search(qvec, k, groups=docs)
+        match = list(zip(labs, sims.tolist()))
 
         # group by document and filter by cutoff
         locs = groupby_dict([l for l, v in match if v > cutoff])
@@ -181,7 +205,8 @@ class FilesystemDatabase(DocumentDatabase):
 
     def clear(self, names=None):
         names = self.get_names() if names is None else names
-        self.index.remove(func=lambda x: x[0] in names)
+        self.cindex.remove(func=lambda x: x[0] in names)
+        self.dindex.remove(labs=names)
 
     def reindex(self, names=None):
         names = self.get_names() if names is None else names

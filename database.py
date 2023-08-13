@@ -52,9 +52,11 @@ def cumul_indices(lengths):
     return [(i, j) for i, j in zip(sums[:-1], sums[1:])]
 
 # generate loader for jsonl file
-def stream_jsonl(path):
+def stream_jsonl(path, maxrows=None):
     with open(path) as fid:
-        for line in fid:
+        for i, line in enumerate(fid):
+            if maxrows is not None and i >= maxrows:
+                break
             yield json.loads(line)
 
 # generate (resolved) batches from generator
@@ -68,11 +70,11 @@ def batch_generator(gen, batch_size):
 class DocumentDatabase:
     def __init__(
             self, model=DEFAULT_MODEL, embed=DEFAULT_EMBED, index=TorchVectorIndex,
-            delim='\n{2,}', minlen=1, batch_size=8192, **kwargs
+            delim='\n{2,}', minlen=1, batch_size=8192, device='cuda', dtype=torch.float16, **kwargs
         ):
         # instantiate model and embedding
-        self.model = HuggingfaceModel(model, **kwargs) if type(model) is str else model
-        self.embed = HuggingfaceEmbedding(embed) if type(embed) is str else embed
+        self.model = HuggingfaceModel(model, device=device, **kwargs) if type(model) is str else model
+        self.embed = HuggingfaceEmbedding(embed, device=device) if type(embed) is str else embed
 
         # set up options
         self.splitter = lambda s: paragraph_splitter(s, delim=delim, minlen=minlen)
@@ -80,15 +82,16 @@ class DocumentDatabase:
 
         # initalize index
         self.chunks = {}
-        self.cindex = index(self.embed.dims)
-        self.dindex = index(self.embed.dims)
+        self.cindex = index(self.embed.dims, device=device, dtype=dtype)
+        self.dindex = index(self.embed.dims, device=device, dtype=dtype)
 
     @classmethod
     def from_jsonl(
-        cls, path, name_col='title', text_col='text', doc_batch=1024, progress=True, **kwargs
+        cls, path, name_col='title', text_col='text', doc_batch=1024, maxrows=None, progress=True, **kwargs
     ):
         self = cls(**kwargs)
-        for batch in batch_generator(stream_jsonl(path), doc_batch):
+        stream = stream_jsonl(path, maxrows=maxrows)
+        for batch in batch_generator(stream, doc_batch):
             self.index_docs((row[name_col], row[text_col]) for row in batch)
             if progress:
                 print('█', end='', flush=True)
@@ -167,9 +170,9 @@ class DocumentDatabase:
         notes = '\n'.join([f'{k}: {v}' for k, v in chunks.items()])
 
         # construct prompt
-        meta = 'Below is some relevant text from my person notes. Using a synthesis of your general knowledge and my notes, answer the question posed at the end concisely. Try to provide quotes from my notes as evidence when possible.'
+        meta = 'Using a synthesis of your general knowledge and the text given below, answer the question posed at the end concisely.'
         system = f'{DEFAULT_SYSTEM_PROMPT}\n\n{meta}'
-        user = f'NOTES:\n{notes}\n\nQUESTION: {query}'
+        user = f'TEXT:\n{notes}\n\nQUESTION: {query}'
 
         # generate response
         yield from self.model.generate(user, chat=system, context=context, maxlen=maxlen)

@@ -83,12 +83,6 @@ class HuggingfaceModel:
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        # choose right decies
-        if device == 'cpu':
-            devargs = {'device_map': 'cpu'}
-        else:
-            devargs = {'device_map': 'auto'}
-
         # choose right bits
         if bits is None:
             bits = 16 if device == 'cuda' else 32
@@ -109,7 +103,7 @@ class HuggingfaceModel:
         )
         self.model = AutoModelForCausalLM.from_pretrained(
             model, trust_remote_code=True, token=True, config=self.modconf,
-            **devargs, **bitargs, **kwargs
+            device_map=device, **bitargs, **kwargs
         )
 
         # compile model if needed

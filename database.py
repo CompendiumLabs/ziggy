@@ -69,8 +69,7 @@ def batch_generator(gen, batch_size):
 # index: TorchVectorIndex {(name, chunk_idx): vec}
 class DocumentDatabase:
     def __init__(
-            self, model=DEFAULT_MODEL, embed=DEFAULT_EMBED, index=TorchVectorIndex,
-            delim='\n{2,}', minlen=1, batch_size=8192, device='cuda', dtype=torch.float16, **kwargs
+            self, model=DEFAULT_MODEL, embed=DEFAULT_EMBED, delim='\n{2,}', minlen=1, batch_size=8192, device='cuda', index_args={}, **kwargs
         ):
         # instantiate model and embedding
         self.model = HuggingfaceModel(model, device=device, **kwargs) if type(model) is str else model
@@ -82,8 +81,8 @@ class DocumentDatabase:
 
         # initalize index
         self.chunks = {}
-        self.cindex = index(self.embed.dims, device=device, dtype=dtype)
-        self.dindex = index(self.embed.dims, device=device, dtype=dtype)
+        self.cindex = TorchVectorIndex(self.embed.dims, **index_args)
+        self.dindex = TorchVectorIndex(self.embed.dims, **index_args)
 
     @classmethod
     def from_jsonl(

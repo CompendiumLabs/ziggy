@@ -1,8 +1,9 @@
 ## LLM generation and embeddings
 
-import torch
 from math import ceil
 from itertools import chain
+import torch
+import torch.nn.functional as F
 
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
 from sentence_transformers import SentenceTransformer
@@ -72,14 +73,15 @@ def length_splitter(text, max_length):
 
 class HuggingfaceModel:
     def __init__(
-        self, model=DEFAULT_MODEL, device='cuda', bits=16, **kwargs
+        self, model=DEFAULT_MODEL, device='cuda', bits=None, compile=False, **kwargs
     ):
         # set options
         self.device = device
 
         # load tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(model, token=True)
-        self.tokenizer.pad_token = self.tokenizer.eos_token
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
 
         # choose right decies
         if device == 'cpu':
@@ -88,6 +90,8 @@ class HuggingfaceModel:
             devargs = {'device_map': 'auto'}
 
         # choose right bits
+        if bits is None:
+            bits = 16 if device == 'cuda' else 32
         if device == 'cuda' and bits == 4:
             bitargs = {'load_in_4bit': True, 'bnb_4bit_compute_dtype': torch.bfloat16}
         elif device == 'cuda' and bits == 8:
@@ -108,11 +112,30 @@ class HuggingfaceModel:
             **devargs, **bitargs, **kwargs
         )
 
-    def encode(self, text):
-        data = self.tokenizer(
-            text, return_tensors='pt', padding=True, truncation=True
-        )
+        # compile model if needed
+        if compile:
+            self.model = torch.compile(self.model)
+
+    def encode(self, text, **kwargs):
+        targs = {'padding': True, 'truncation': True, **kwargs}
+        data = self.tokenizer(text, return_tensors='pt', **targs)
         return data['input_ids'].to(self.device), data['attention_mask'].to(self.device)
+
+    def embed(self, text, **kwargs):
+        # encode input text
+        input_ids, attn_mask = self.encode(text, **kwargs)
+
+        # get model output (no grad for memory usage)
+        with torch.no_grad():
+            output = self.model(input_ids, attn_mask)
+
+        # get masked embedding
+        state = output.hidden_states[-1]
+        mask = attn_mask.float().unsqueeze(-1)
+        embed = (state*mask).sum(1)/mask.sum(1)
+
+        # return normalized embedding
+        return F.normalize(embed, dim=-1)
 
     # proper python generator variant that uses model.__call__ directly
     def generate(self, prompt, chat=True, context=2048, maxlen=2048, top_k=10, temp=1.0):

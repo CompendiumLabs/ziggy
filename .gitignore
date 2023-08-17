@@ -1,3 +1,7 @@
 __pycache__
 auth.toml
 testing
+
+extension/build
+extension/dist
+extension/*.egg-info

@@ -127,6 +127,9 @@ class TorchVectorIndex:
             resize_alloc(self.groups, size)
 
     def add(self, labs, vecs, groups=None, strict=False):
+        # ensure on device
+        vecs = vecs.to(self.device)
+
         # validate input size
         nlabs = len(labs)
         nv, dv = vecs.shape
@@ -186,6 +189,9 @@ class TorchVectorIndex:
         self.labels = []
 
     def search(self, vecs, k, groups=None, return_simil=True):
+        # ensure on device
+        vecs = vecs.to(self.device)
+
         # allow for single vec
         squeeze = vecs.ndim == 1
         if squeeze:

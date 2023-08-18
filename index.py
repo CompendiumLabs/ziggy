@@ -79,7 +79,7 @@ class TorchVectorIndex:
         assert(size == size1)
 
         # allocate values tensor
-        self.max_size = max(self.max_size, next_power_of_2(size))
+        self.max_size = size
         self.allocate()
 
         # set values in place
@@ -111,8 +111,7 @@ class TorchVectorIndex:
         else:
             return data
 
-    def expand(self, min_size):
-        size = next_power_of_2(min_size)
+    def expand(self, size):
         if size > self.max_size:
             self.max_size = size
             resize_alloc(self.values, size)
@@ -187,6 +186,10 @@ class TorchVectorIndex:
 
     def clear(self):
         self.labels = []
+
+    def get(self, labels):
+        idxs = [self.labels.index(l) for l in labels]
+        return self.values[idxs,:]
 
     def search(self, vecs, k, groups=None, return_simil=True):
         # ensure on device

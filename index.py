@@ -32,67 +32,46 @@ def double_alloc(a):
 
 class TorchVectorIndex:
     def __init__(
-        self, dims=None, max_size=1024, load=None, device='cuda',
-        dtype=torch.float16, qscale=4.0/128, qzero=0
+        self, dims=None, size=1024, load=None, device='cuda', dtype=None,
+        scale=4.0/128, zero_point=0
     ):
-        # set options
-        assert(log2(max_size) % 1 == 0)
-        self.max_size = max_size
+        # default datatype
+        if dtype is None:
+            dtype = torch.float16 if device == 'cuda' else torch.float32
+
+        # set runtime options
         self.device = device
 
         # init state
         if load is not None:
             self.load(load)
         else:
-            # store options
-            self.dims = dims
-            self.dtype = dtype
-            if dtype == torch.qint8:
-                self.qscale = qscale
-                self.qzero = qzero
-
             # set up storage
             self.labels = []
             self.grpids = IndexDict()
-            self.allocate()
+            self.allocate(
+                size, dims, dtype=dtype, scale=scale, zero_point=zero_point
+            )
 
-    def allocate(self):
-        if self.dtype == torch.qint8:
+    def allocate(self, size, dims, dtype=torch.float32, scale=None, zero_point=None):
+        if dtype == torch.qint8:
             self.values = torch._empty_affine_quantized(
-                self.max_size, self.dims, device=self.device, dtype=torch.qint8,
-                scale=self.qscale, zero_point=self.qzero
+                size, dims, device=self.device, dtype=torch.qint8,
+                scale=scale, zero_point=zero_point
             )
         else:
-            self.values = torch.empty(self.max_size, self.dims, device=self.device, dtype=self.dtype)
-        self.groups = torch.empty(self.max_size, device=self.device, dtype=torch.int32)
+            self.values = torch.empty(size, dims, device=self.device, dtype=dtype)
+        self.groups = torch.empty(size, device=self.device, dtype=torch.int32)
 
     def size(self):
         return len(self.labels)
 
     def load(self, path):
-        # load in data
         data = torch.load(path) if type(path) is str else path
-
-        # get sizes and validate
-        size = len(data['labels'])
-        size1, self.dims = data['values'].shape
-        assert(size == size1)
-
-        # allocate values tensor
-        self.max_size = size
-        self.allocate()
-
-        # set values in place
         self.labels = data['labels']
         self.grpids = IndexDict(data['grpids'])
-        self.values[:size,:] = data['values']
-        self.groups[:size] = data['groups']
-
-        # inferred states
-        self.dtype = data['dtype']
-        if self.dtype == torch.qint8:
-            self.qscale = data['qscale']
-            self.qzero = data['qzero']
+        self.values = data['values']
+        self.groups = data['groups']
 
     def save(self, path=None):
         size = self.size()
@@ -101,27 +80,20 @@ class TorchVectorIndex:
             'grpids': dict(self.grpids),
             'values': self.values[:size,:],
             'groups': self.groups[:size],
-            'dtype': self.dtype
         }
-        if self.dtype == torch.qint8:
-            data['qscale'] = self.qscale
-            data['qzero'] = self.qzero
         if path is not None:
             torch.save(data, path)
         else:
             return data
 
     def expand(self, size):
-        if size > self.max_size:
-            self.max_size = size
+        if size > self.values.size(0):
             resize_alloc(self.values, size)
             resize_alloc(self.groups, size)
 
     def compress(self, min_size=1024):
-        size0 = next_power_of_2(self.size())
-        size = max(min_size, size0)
-        if size < self.max_size:
-            self.max_size = size
+        size = max(min_size, self.size())
+        if size < self.values.size(0):
             resize_alloc(self.values, size)
             resize_alloc(self.groups, size)
 
@@ -132,8 +104,9 @@ class TorchVectorIndex:
         # validate input size
         nlabs = len(labs)
         nv, dv = vecs.shape
+        _, d0 = self.values.shape
         assert(nv == nlabs)
-        assert(dv == self.dims)
+        assert(dv == d0)
 
         # get breakdown of new vs old
         slabs = set(labs)
@@ -193,7 +166,7 @@ class TorchVectorIndex:
 
     def search(self, vecs, k, groups=None, return_simil=True):
         # ensure on device
-        vecs = vecs.to(self.device)
+        vecs = vecs.to(device=self.device)
 
         # allow for single vec
         squeeze = vecs.ndim == 1
@@ -216,10 +189,10 @@ class TorchVectorIndex:
             vals = self.values[idx,:]
 
         # compute distance matrix
-        if self.dtype == torch.qint8:
+        if self.values.dtype == torch.qint8:
             sims = matmul_quant_float(vals, vecs.T.float()).T
         else:
-            sims = vecs.to(self.dtype) @ vals.T
+            sims = vecs.to(self.values.dtype) @ vals.T
 
         # get top results
         tops = sims.topk(k1)

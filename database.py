@@ -69,11 +69,12 @@ def batch_generator(gen, batch_size):
 # index: TorchVectorIndex {(name, chunk_idx): vec}
 class DocumentDatabase:
     def __init__(
-            self, model=DEFAULT_MODEL, embed=DEFAULT_EMBED, delim='\n{2,}', minlen=1, batch_size=8192, device='cuda', index_args={}, **kwargs
+            self, model=DEFAULT_MODEL, embed=DEFAULT_EMBED, delim='\n{2,}', minlen=1, batch_size=1024, model_device='cuda', index_device='cpu', index_args={}, dims=None, **kwargs
         ):
         # instantiate model and embedding
-        self.model = HuggingfaceModel(model, device=device, **kwargs) if type(model) is str else model
-        self.embed = HuggingfaceEmbedding(embed, device=device) if type(embed) is str else embed
+        self.model = HuggingfaceModel(model, device=model_device, **kwargs) if type(model) is str else model
+        self.embed = HuggingfaceEmbedding(embed, device=model_device) if type(embed) is str else embed
+        self.dims = dims if dims is not None else self.embed.dims
 
         # set up options
         self.splitter = lambda s: paragraph_splitter(s, delim=delim, minlen=minlen)
@@ -81,8 +82,8 @@ class DocumentDatabase:
 
         # initalize index
         self.chunks = {}
-        self.cindex = TorchVectorIndex(self.embed.dims, **index_args)
-        self.dindex = TorchVectorIndex(self.embed.dims, **index_args)
+        self.cindex = TorchVectorIndex(self.dims, device=index_device, **index_args)
+        self.dindex = TorchVectorIndex(self.dims, device=index_device, **index_args)
 
     @classmethod
     def from_jsonl(
@@ -135,7 +136,7 @@ class DocumentDatabase:
         # embed chunks with chosen batch_size
         chunk_iter = chain(*chunks.values())
         embeds = torch.cat([
-            self.embed.embed(islice(chunk_iter, self.batch_size)) for i in range(nbatch)
+            self.embed.embed(list(islice(chunk_iter, self.batch_size))) for i in range(nbatch)
         ], dim=0)
 
         # make document level embeddings

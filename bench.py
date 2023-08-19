@@ -8,6 +8,8 @@ from optimum.onnxruntime.configuration import OptimizationConfig
 
 from database import stream_jsonl, paragraph_splitter
 
+# sentence-transformers/all-MiniLM-L6-v2
+
 def load_data(path, nrows=1024):
     docs = [line['text'] for line in stream_jsonl(path, maxrows=nrows)]
     chunks = list(chain(*[paragraph_splitter(doc, delim='\n', minlen=100) for doc in docs]))
@@ -35,7 +37,7 @@ class ONNXModel:
     def __init__(self, path, device='cuda'):
         self.device = device
         self.tokenizer = AutoTokenizer.from_pretrained(path)
-        self.model = ORTModelForFeatureExtraction.from_pretrained(path, file_name='model_optimized.onnx')
+        self.model = ORTModelForFeatureExtraction.from_pretrained(path, provider='CUDAExecutionProvider')
 
     def encode(self, text, **kwargs):
         args = {'padding': True, 'truncation': True, **kwargs}
@@ -45,5 +47,5 @@ class ONNXModel:
     def embed(self, inputs):
         model_inputs = self.encode(inputs)
         model_outputs = self.model(**model_inputs)
-        embeddings = mean_pooling(model_outputs, model_inputs['attention_mask'])
+        embeddings = mean_pooling(model_outputs, model_inputs['attention_mask'].to(self.device))
         return F.normalize(embeddings, p=2, dim=1)

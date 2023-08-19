@@ -59,9 +59,6 @@ Tensor matmul_quant_float(Tensor a, Tensor b) {
 }
 
 void test_quantized() {
-  std::cout << torch::get_num_threads() << std::endl;
-  std::cout << torch::get_num_interop_threads() << std::endl;
-
   at::IntArrayRef sizes = {4096, 256};
   Tensor a = torch::ones(sizes);
   Tensor b = torch::ones(sizes);

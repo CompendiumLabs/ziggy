@@ -51,46 +51,6 @@ Tensor matmul_quant_float(Tensor a, Tensor b) {
   return c;
 }
 
-Tensor multiply(Tensor a, Tensor b) {
-  at::ScalarType typea = a.scalar_type();
-  at::ScalarType typeb = b.scalar_type();
-  assert(typea == typeb);
-
-  at::IntArrayRef sizesa = a.sizes();
-  at::IntArrayRef sizesb = b.sizes();
-  assert(sizesa == sizesb);
-
-  at::IntArrayRef stridesa = a.strides();
-  at::IntArrayRef stridesb = b.strides();
-
-  int64_t sizesc[] = {sizesa[0], sizesb[1]};
-  Tensor c = torch::empty(sizesc, at::device(kCPU).dtype(torch::kFloat));
-
-  AT_DISPATCH_FLOATING_TYPES(typea, "matmul", [&]() {
-    scalar_t* a_ptr = a.data_ptr<scalar_t>();
-    scalar_t* b_ptr = b.data_ptr<scalar_t>();
-    scalar_t* c_ptr = c.data_ptr<scalar_t>();
-
-    int64_t idxa, idxb;
-    float sum;
-
-    for (int64_t i = 0; i < sizesa[0]; i++) {
-      for (int64_t j = 0; j < sizesb[1]; j++) {
-        sum = 0.0;
-        for (int64_t k = 0; k < sizesa[1]; k++) {
-          idxa = i * stridesa[0] + k * stridesa[1];
-          idxb = k * stridesb[0] + j * stridesb[1];
-          sum += a_ptr[idxa] * b_ptr[idxb];
-        }
-        c_ptr[i * sizesc[1] + j] = sum;
-      }
-    }
-  });
-
-  return c;
-}
-
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("matmul_quant_float", &matmul_quant_float, "Quantized Matmul");
-  m.def("matmul", &matmul, "Matmul");
 }

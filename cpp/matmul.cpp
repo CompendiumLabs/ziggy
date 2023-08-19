@@ -32,20 +32,22 @@ Tensor matmul_quant_float(Tensor a, Tensor b) {
     float_t* b_ptr = b.data_ptr<float_t>();
     float_t* c_ptr = c.data_ptr<float_t>();
 
-    int64_t idxa, idxb;
-    float_t vala, valb;
-    float_t sum;
-
     at::parallel_for(0, sn, 0, [&](int64_t i0, int64_t i1) {
+      underlying_t* ptra;
+      float_t* ptrb;
+      float_t vala, valb;
+      float_t sum;
       for (int64_t i = i0; i < i1; i++) {
         for (int64_t j = 0; j < sm; j++) {
           sum = 0.0;
+          ptra = a_ptr + i * tan;
+          ptrb = b_ptr + j * tbm;
           for (int64_t k = 0; k < sk; k++) {
-            idxa = i * tan + k * tak;
-            idxb = k * tbk + j * tbm;
-            vala = scale * (a_ptr[idxa] - zero_point);
-            valb = b_ptr[idxb];
+            vala = scale * ((*ptra) - zero_point);
+            valb = (*ptrb);
             sum += vala * valb;
+            ptra += tak;
+            ptrb += tbk;
           }
           c_ptr[i * sm + j] = sum;
         }

@@ -27,6 +27,13 @@ Tensor matmul_quant_float(Tensor a, Tensor b) {
   int64_t tbm = stridesb[1];
   Tensor c = torch::empty({sn, sm}, at::device(kCPU).dtype(torch::kFloat));
 
+  // try to interleave `i` loop to reduce cache miss
+  // nt = omp_get_max_threads();
+  // nb = sn / nt
+  // ib = i / nb
+  // it = i % nt
+  // ii = ib * nb + it
+
   AT_DISPATCH_QINT_TYPES(typea, "matmul_quant_float", [&]() {
     underlying_t* a_ptr = a.data_ptr<underlying_t>();
     float_t* b_ptr = b.data_ptr<float_t>();

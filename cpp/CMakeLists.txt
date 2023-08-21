@@ -3,8 +3,8 @@ project(test)
 
 find_package(Torch REQUIRED)
 
-add_executable(matmul matmul.cpp)
-target_compile_options(matmul PUBLIC -fopenmp)
-target_link_options(matmul PUBLIC -lgomp)
-target_link_libraries(matmul "${TORCH_LIBRARIES}")
-set_target_properties(matmul PROPERTIES CXX_STANDARD 14)
+add_executable(testing testing.cpp matmul_quant.cpp)
+target_compile_options(testing PUBLIC -fopenmp)
+target_link_options(testing PUBLIC -lgomp)
+target_link_libraries(testing "${TORCH_LIBRARIES}")
+set_target_properties(testing PROPERTIES CXX_STANDARD 14)

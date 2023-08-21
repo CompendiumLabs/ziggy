@@ -1,6 +1,7 @@
 #include <iostream>
 
-#include <torch/torch.h>
+#include "matmul_quant.h"
+
 #include <ATen/ParallelOpenMP.h>
 #include <ATen/Dispatch.h>
 
@@ -26,13 +27,6 @@ Tensor matmul_quant_float(Tensor a, Tensor b) {
   int64_t tbk = stridesb[0];
   int64_t tbm = stridesb[1];
   Tensor c = torch::empty({sn, sm}, at::device(kCPU).dtype(torch::kFloat));
-
-  // try to interleave `i` loop to reduce cache miss
-  // nt = omp_get_max_threads();
-  // nb = sn / nt
-  // ib = i / nb
-  // it = i % nt
-  // ii = ib * nb + it
 
   AT_DISPATCH_QINT_TYPES(typea, "matmul_quant_float", [&]() {
     underlying_t* a_ptr = a.data_ptr<underlying_t>();
@@ -63,8 +57,4 @@ Tensor matmul_quant_float(Tensor a, Tensor b) {
   });
 
   return c;
-}
-
-PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-  m.def("matmul_quant_float", &matmul_quant_float, "Quantized Matmul");
 }

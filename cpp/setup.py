@@ -6,7 +6,7 @@ setup(
     ext_modules=[
         CppExtension(
             'matmul_quant',
-            sources=['matmul_quant.cpp'],
+            sources=['extension.cpp', 'matmul_quant.cpp'],
             extra_compile_args=['-fopenmp'],
             extra_link_args=['-lgomp'],
         ),

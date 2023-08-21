@@ -149,11 +149,11 @@ class DocumentDatabase:
         self.cindex.add(labels, embeds, groups=groups)
         self.dindex.add(names, docemb)
 
-    def search(self, query, k=10, groups=None, cutoff=0.0):
+    def search(self, query, kd=25, kc=10, cutoff=-torch.inf):
         # get relevant chunks
         qvec = self.embed.embed(query).squeeze()
-        docs = self.dindex.search(qvec, k, return_simil=False)
-        labs, sims = self.cindex.search(qvec, k, groups=docs)
+        docs = self.dindex.search(qvec, kd, return_simil=False)
+        labs, sims = self.cindex.search(qvec, kc, groups=docs)
         match = list(zip(labs, sims.tolist()))
 
         # group by document and filter by cutoff

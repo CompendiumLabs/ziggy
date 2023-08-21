@@ -4,10 +4,6 @@ screenlog.*
 testing
 store
 
-extension/build
-extension/dist
-extension/*.egg-info
-
 cpp/build
 cpp/libtorch
 cpp/dist

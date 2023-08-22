@@ -4,4 +4,4 @@
 
 using namespace torch;
 
-Tensor matmul_quant_float(Tensor a, Tensor b);
+Tensor matmul_qint8_float(Tensor a, Tensor b);

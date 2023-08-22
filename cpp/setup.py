@@ -7,7 +7,7 @@ setup(
         CppExtension(
             'matmul_quant',
             sources=['extension.cpp', 'matmul_quant.cpp'],
-            extra_compile_args=['-fopenmp'],
+            extra_compile_args=['-fopenmp', '-mavx512f'],
             extra_link_args=['-lgomp'],
         ),
     ],

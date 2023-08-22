@@ -7,5 +7,5 @@
 using namespace torch;
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-  m.def("matmul_quant_float", &matmul_quant_float, "Quantized Matmul");
+  m.def("matmul_qint8_float", &matmul_qint8_float, "Quantized Matmul");
 }

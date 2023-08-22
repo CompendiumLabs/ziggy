@@ -1,5 +1,6 @@
 __pycache__
 screenlog.*
+.vscode
 
 testing
 store

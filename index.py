@@ -8,10 +8,27 @@ from math import ceil, log2
 from utils import IndexDict
 
 ##
-## Load extensions
+## Load fast quantization extension
 ##
 
-from matmul_quant import matmul_quant_float
+import matmul_quant
+
+# here `a` is considered big and immovable
+# transpose pattern is to keep `a` contiguous
+def similarity(a, b):
+    # move `b` to same device as `a`
+    b = b.to(device=a.device)
+
+    # break down by quantization and device
+    if a.is_quantized:
+        if a.device.type == 'cpu' and a.dtype == torch.qint8:
+            return matmul_quant.matmul_qint8_float32_cpu(a, b.T.float()).T
+        elif a.device.type == 'cuda' and a.dtype == torch.qint8:
+            return matmul_quant.matmul_qint8_float16_cuda(a, b.T.half()).T
+        else:
+            raise Exception(f'Unsupported device/dtype: {a.device}/{a.dtype}')
+    else:
+        return (a @ b.to(dtype=a.dtype)).T
 
 ##
 ## Utils
@@ -165,9 +182,6 @@ class TorchVectorIndex:
         return self.values[idxs,:]
 
     def search(self, vecs, k, groups=None, return_simil=True):
-        # ensure on device
-        vecs = vecs.to(device=self.device)
-
         # allow for single vec
         squeeze = vecs.ndim == 1
         if squeeze:
@@ -188,11 +202,8 @@ class TorchVectorIndex:
             labs = [self.labels[i] for i in idx]
             vals = self.values[idx,:]
 
-        # compute distance matrix
-        if self.values.dtype == torch.qint8:
-            sims = matmul_quant_float(vals, vecs.T.float()).T
-        else:
-            sims = vecs.to(self.values.dtype) @ vals.T
+        # compute similarity matrix
+        sims = similarity(vals, vecs)
 
         # get top results
         tops = sims.topk(k1)

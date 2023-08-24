@@ -1,7 +1,4 @@
-#include <iostream>
-
-#include "matmul_quant.h"
-
+#include <torch/torch.h>
 #include <immintrin.h>
 #include <ATen/ParallelOpenMP.h>
 
@@ -10,7 +7,7 @@ using namespace torch;
 #ifdef __AVX2__
 
 const int64_t BLOCK_SIZE = 16; // = 128 bit / 8 bit
-inline float_t dot_qint8_float(int8_t* a, float_t* b, int64_t n, int64_t ta, int64_t tb, double scale, int64_t zero_point) {
+inline float_t dot_qint8_float32_cpu(int8_t* a, float_t* b, int64_t n, int64_t ta, int64_t tb, double scale, int64_t zero_point) {
   float_t sum = 0.0;
   int8_t* ai = a;
   float_t* bi = b;
@@ -19,7 +16,7 @@ inline float_t dot_qint8_float(int8_t* a, float_t* b, int64_t n, int64_t ta, int
     __m128i a_vec_i8 = _mm_loadu_si128((__m128i_u*)ai); // a
     __m512 b_vec_f32 = _mm512_loadu_ps(bi); // b
     __m128i a_sub_i8 = _mm_sub_epi8(a_vec_i8, zero_i8); // a - zero_point
-    __m512i a_sub_i32 = _mm512_cvtepi8_epi32(a_sub_i8); // a - zero_point
+    __m512i a_sub_i32 = _mm512_cvtepi8_epi32(a_sub_i8); // a - zero_point (unpack to 32 bit)
     __m512 a_sub_f32 = _mm512_cvtepi32_ps(a_sub_i32); // float(a - zero_point)
     __m512 c_vec_f32 = _mm512_mul_ps(a_sub_f32, b_vec_f32); // float(a - zero_point) * b
     sum += _mm512_reduce_add_ps(c_vec_f32);
@@ -31,7 +28,7 @@ inline float_t dot_qint8_float(int8_t* a, float_t* b, int64_t n, int64_t ta, int
 
 #else // __AVX2__
 
-inline float_t dot_qint8_float(int8_t* a, float_t* b, int64_t n, int64_t ta, int64_t tb, double scale, int64_t zero_point) {
+inline float_t dot_qint8_float32_cpu(int8_t* a, float_t* b, int64_t n, int64_t ta, int64_t tb, double scale, int64_t zero_point) {
   float_t vala;
   float_t valb;
   float_t sum = 0.0;
@@ -49,7 +46,7 @@ inline float_t dot_qint8_float(int8_t* a, float_t* b, int64_t n, int64_t ta, int
 
 #endif // __AVX2__
 
-Tensor matmul_qint8_float(Tensor a, Tensor b) {
+Tensor matmul_qint8_float32_cpu(Tensor a, Tensor b) {
   at::ScalarType typea = a.scalar_type();
   at::ScalarType typeb = b.scalar_type();
   double scale = a.q_scale();
@@ -85,7 +82,7 @@ Tensor matmul_qint8_float(Tensor a, Tensor b) {
       for (int64_t j = 0; j < sm; j++) {
         posa = a_ptr + i * tan;
         posb = b_ptr + j * tbm;
-        c_ptr[i * sm + j] = dot_qint8_float(posa, posb, sk, tak, tbk, scale, zero_point);
+        c_ptr[i * sm + j] = dot_qint8_float32_cpu(posa, posb, sk, tak, tbk, scale, zero_point);
       }
     }
   });

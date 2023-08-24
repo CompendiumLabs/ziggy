@@ -69,7 +69,7 @@ def batch_generator(gen, batch_size):
 # index: TorchVectorIndex {(name, chunk_idx): vec}
 class DocumentDatabase:
     def __init__(
-            self, model=DEFAULT_MODEL, embed=DEFAULT_EMBED, delim='\n{2,}', minlen=1, batch_size=1024, model_device='cuda', index_device='cpu', index_args={}, dims=None, **kwargs
+            self, model=DEFAULT_MODEL, embed=DEFAULT_EMBED, delim='\n{2,}', minlen=1, batch_size=1024, model_device='cuda', index_device='cpu', index_args={}, doc_index=True, dims=None, **kwargs
         ):
         # instantiate model and embedding
         self.model = HuggingfaceModel(model, device=model_device, **kwargs) if type(model) is str else model
@@ -83,7 +83,7 @@ class DocumentDatabase:
         # initalize index
         self.chunks = {}
         self.cindex = TorchVectorIndex(self.dims, device=index_device, **index_args)
-        self.dindex = TorchVectorIndex(self.dims, device=index_device, **index_args)
+        self.dindex = TorchVectorIndex(self.dims, device=index_device, **index_args) if doc_index else None
 
     @classmethod
     def from_jsonl(
@@ -139,20 +139,23 @@ class DocumentDatabase:
             self.embed.embed(list(islice(chunk_iter, self.batch_size))) for i in range(nbatch)
         ], dim=0)
 
-        # make document level embeddings
-        docemb = normalize(torch.stack([
-            embeds[i:j,:].mean(0) for i, j in cumul_indices(chunk_sizes)
-        ], dim=0))
-
         # update chunks and add to index
         self.chunks.update(chunks)
         self.cindex.add(labels, embeds, groups=groups)
-        self.dindex.add(names, docemb)
+
+        # make document level embeddings
+        if self.dindex is not None:
+            docemb = normalize(torch.stack([
+                embeds[i:j,:].mean(0) for i, j in cumul_indices(chunk_sizes)
+            ], dim=0))
+            self.dindex.add(names, docemb)
 
     def search(self, query, kd=25, kc=10, cutoff=-torch.inf):
-        # get relevant chunks
+        # embed query string
         qvec = self.embed.embed(query).squeeze()
-        docs = self.dindex.search(qvec, kd, return_simil=False)
+
+        # search document index
+        docs = self.dindex.search(qvec, kd, return_simil=False) if self.dindex is not None else None
         labs, sims = self.cindex.search(qvec, kc, groups=docs)
         match = list(zip(labs, sims.tolist()))
 

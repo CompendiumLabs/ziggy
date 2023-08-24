@@ -22,13 +22,13 @@ def similarity(a, b):
     # break down by quantization and device
     if a.is_quantized:
         if a.device.type == 'cpu' and a.dtype == torch.qint8:
-            return matmul_quant.matmul_qint8_float32_cpu(a, b.T.float()).T
+            return matmul_quant.matmul_qint8_float32_cpu(a, b.float().T).T
         elif a.device.type == 'cuda' and a.dtype == torch.qint8:
-            return matmul_quant.matmul_qint8_float16_cuda(a, b.T.half()).T
+            return matmul_quant.matmul_qint8_float16_cuda(a, b.half().T).T
         else:
             raise Exception(f'Unsupported device/dtype: {a.device}/{a.dtype}')
     else:
-        return (a @ b.to(dtype=a.dtype)).T
+        return (a @ b.to(dtype=a.dtype).T).T
 
 ##
 ## Utils

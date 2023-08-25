@@ -8,7 +8,7 @@ import triton.language as tl
 
 BLOCK_SIZE_N = 32
 BLOCK_SIZE_M = 32
-BLOCK_SIZE_K = 128
+BLOCK_SIZE_K = 32
 
 ##
 ## functions

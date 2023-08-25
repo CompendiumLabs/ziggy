@@ -103,7 +103,9 @@ class TorchVectorIndex:
         else:
             return data
 
-    def expand(self, size):
+    def expand(self, size, power=False):
+        if power:
+            size = next_power_of_2(size)
         if size > self.values.size(0):
             resize_alloc(self.values, size)
             resize_alloc(self.groups, size)
@@ -159,7 +161,7 @@ class TorchVectorIndex:
             # expand size if needed
             nlabels0 = self.size()
             nlabels1 = nlabels0 + len(novel)
-            self.expand(nlabels1)
+            self.expand(nlabels1, power=True)
 
             # add in new labels and vectors
             self.labels.extend(xlabs)

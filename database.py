@@ -17,6 +17,7 @@ from llm import (
     sprint, HuggingfaceModel, HuggingfaceEmbedding
 )
 from index import TorchVectorIndex
+from utils import process
 
 ##
 ## Utils
@@ -87,14 +88,19 @@ class DocumentDatabase:
 
     @classmethod
     def from_jsonl(
-        cls, path, name_col='title', text_col='text', doc_batch=1024, maxrows=None, progress=True, **kwargs
+        cls, path, name_col='title', text_col='text', doc_batch=1024, maxrows=None,
+        progress=True, maxsize=10, **kwargs
     ):
         self = cls(**kwargs)
-        stream = stream_jsonl(path, maxrows=maxrows)
-        for batch in batch_generator(stream, doc_batch):
-            self.index_docs((row[name_col], row[text_col]) for row in batch)
+        def loader(path):
+            lines = stream_jsonl(path, maxrows=maxrows)
+            for batch in batch_generator(lines, doc_batch):
+                yield [(row[name_col], row[text_col]) for row in batch]
+        def indexer(data):
+            self.index_docs(data)
             if progress:
                 print('█', end='', flush=True)
+        process(loader(path), indexer, maxsize=maxsize)
         return self
 
     @classmethod

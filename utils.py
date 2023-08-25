@@ -3,6 +3,11 @@
 from typing import Any
 import toml
 import operator
+import asyncio
+
+##
+## decorators
+##
 
 def allow_list(func):
     def wrapper(self, keys):
@@ -12,6 +17,10 @@ def allow_list(func):
         if rets is not None:
             return rets if many else rets[0]
     return wrapper
+
+##
+## collections
+##
 
 class IndexDict(dict):
     @allow_list
@@ -59,3 +68,37 @@ class Bundle(dict):
     
     def __setattr__(self, key, value):
         self[key] = value
+
+##
+## async rig
+##
+
+# enqueue batch generator
+async def loader_func(queue, stream):
+    for batch in stream:
+        await queue.put(batch)
+
+# process queue items
+async def worker_func(queue, func):
+    while True:
+        data = await queue.get()
+        func(data)
+        queue.task_done()
+
+# asnychronous indexer
+async def process_async(stream, func, maxsize=0):
+    # create queue
+    queue = asyncio.Queue(maxsize=maxsize)
+
+    # hook up queue
+    loader = asyncio.create_task(loader_func(queue, stream))
+    worker = asyncio.create_task(worker_func(queue, func))
+
+    # wait for load to finish
+    await loader
+
+    # finish remaining tasks
+    await queue.join()
+
+def process(stream, func, **kwargs):
+    asyncio.run(process_async(stream, func, **kwargs))

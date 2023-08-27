@@ -28,10 +28,12 @@ def paragraph_splitter(text, delim='\n{2,}', minlen=1):
     paras = [para.strip() for para in re.split(delim, text)]
     return [para for para in paras if len(para) >= minlen]
 
-# group tuples by first element
+# group tuples by `idx` element, preserving other orders
 def groupby_dict(tups, idx=0):
+    getter = itemgetter(idx)
+    tups = sorted(tups, key=getter)
     return {
-        i: [k for _, k in j] for i, j in groupby(tups, key=itemgetter(idx))
+        i: [k for _, k in j] for i, j in groupby(tups, key=getter)
     }
 
 # robust text reader (for encoding errors)
@@ -112,7 +114,10 @@ class DocumentDatabase:
         self.dindex.load(data['dindex'])
         return self
 
-    def save(self, path=None):
+    def save(self, path=None, compress=True):
+        if compress:
+            self.cindex.compress()
+            self.dindex.compress()
         data = {
             'chunks': self.chunks,
             'cindex': self.cindex.save(),

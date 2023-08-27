@@ -52,10 +52,6 @@ class TorchVectorIndex:
         self, dims=None, size=1024, load=None, device='cuda', dtype=None,
         scale=4.0/128, zero_point=0
     ):
-        # default datatype
-        if dtype is None:
-            dtype = torch.float16 if device == 'cuda' else torch.float32
-
         # set runtime options
         self.device = device
 
@@ -63,6 +59,10 @@ class TorchVectorIndex:
         if load is not None:
             self.load(load)
         else:
+            # default datatype
+            if dtype is None:
+                dtype = torch.float16 if device == 'cuda' else torch.float32
+
             # set up storage
             self.labels = []
             self.grpids = IndexDict()
@@ -90,7 +90,9 @@ class TorchVectorIndex:
         self.values = data['values']
         self.groups = data['groups']
 
-    def save(self, path=None):
+    def save(self, path=None, compress=True):
+        if compress:
+            self.compress()
         size = self.size()
         data = {
             'labels': self.labels,
@@ -180,8 +182,33 @@ class TorchVectorIndex:
         self.labels = []
 
     def get(self, labels):
-        idxs = [self.labels.index(l) for l in labels]
-        return self.values[idxs,:]
+        # convert to indices
+        labels = [labels] if type(labels) is not list else labels
+        indices = [self.labels.index(l) for l in labels]
+
+        # validate indices
+        size = self.size()
+        if (indices == -1).any():
+            raise Exception(f'Some labels not found.')
+
+        # return values
+        return self.values[indices,:]
+
+    def idx(self, indices):
+        # convert to tensor if needed
+        indices = [indices] if type(indices) is int else indices
+        indices = torch.tensor(indices, device=self.device, dtype=torch.int32)
+
+        # handle negative indices
+        size = self.size()
+        indices = torch.where(indices < 0, indices + size, indices)
+
+        # validate indices
+        if (indices < 0).any() or (indices >= size).any():
+            raise Exception(f'Some indices out of bounds.')
+
+        # return values
+        return self.values[indices,:]
 
     def search(self, vecs, k, groups=None, return_simil=True):
         # allow for single vec

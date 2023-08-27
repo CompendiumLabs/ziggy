@@ -168,6 +168,10 @@ class HuggingfaceModel:
             trim = 1 if input_ids.size(1) == context else 0
             input_ids = torch.cat((input_ids[:,trim:], index.unsqueeze(1)), dim=1)
 
+    def igenerate(self, query, **kwargs):
+        for s in self.generate(query, **kwargs):
+            sprint(s)
+
 # this has to take context at creation time
 # NOTE: llama2-70b needs n_gqa=8
 class LlamaCppModel:

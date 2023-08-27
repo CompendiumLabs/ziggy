@@ -35,7 +35,7 @@ inline float_t dot_qint8_float32_cpu(int8_t* a, float_t* b, int64_t n, int64_t t
   int8_t* ai = a;
   float_t* bi = b;
   for (int64_t i = 0; i < n; i++) {
-    vala = float((*ai) - zero_point);
+    vala = (float)((*ai) - zero_point);
     valb = (*bi);
     sum += vala * valb;
     ai += ta;

@@ -1,4 +1,4 @@
-# vector index code
+# vector index
 
 import faiss
 import torch
@@ -229,7 +229,7 @@ class TorchVectorIndex:
             sel = torch.isin(self.groups[:num], ids)
             idx = torch.nonzero(sel).squeeze()
             labs = [self.labels[i] for i in idx]
-            vals = self.values[idx,:]
+            vals = self.values.index_select(0, idx)
 
         # compute similarity matrix
         sims = similarity(vals, vecs)

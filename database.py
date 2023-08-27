@@ -1,5 +1,4 @@
-# document Databases
-
+# document databases
 
 import os
 import re
@@ -12,10 +11,7 @@ from itertools import chain, groupby, islice, accumulate
 from pathlib import Path
 from torch.nn.functional import normalize
 
-from llm import (
-    DEFAULT_MODEL, DEFAULT_EMBED, DEFAULT_SYSTEM_PROMPT,
-    sprint, HuggingfaceModel, HuggingfaceEmbedding
-)
+from llm import DEFAULT_EMBED, HuggingfaceEmbedding
 from index import TorchVectorIndex
 from utils import process
 
@@ -72,10 +68,10 @@ def batch_generator(gen, batch_size):
 # index: TorchVectorIndex {(name, chunk_idx): vec}
 class DocumentDatabase:
     def __init__(
-            self, model=DEFAULT_MODEL, embed=DEFAULT_EMBED, delim='\n{2,}', minlen=1, batch_size=1024, model_device='cuda', index_device='cpu', index_args={}, doc_index=True, dims=None, **kwargs
+            self, embed=DEFAULT_EMBED, delim='\n{2,}', minlen=1, batch_size=1024,
+            model_device='cuda', index_device='cpu', doc_index=True, dims=None, **kwargs
         ):
         # instantiate model and embedding
-        self.model = HuggingfaceModel(model, device=model_device, **kwargs) if type(model) is str else model
         self.embed = HuggingfaceEmbedding(embed, device=model_device) if type(embed) is str else embed
         self.dims = dims if dims is not None else self.embed.dims
 
@@ -85,8 +81,8 @@ class DocumentDatabase:
 
         # initalize index
         self.chunks = {}
-        self.cindex = TorchVectorIndex(self.dims, device=index_device, **index_args)
-        self.dindex = TorchVectorIndex(self.dims, device=index_device, **index_args) if doc_index else None
+        self.cindex = TorchVectorIndex(self.dims, device=index_device, **kwargs)
+        self.dindex = TorchVectorIndex(self.dims, device=index_device, **kwargs) if doc_index else None
 
     @classmethod
     def from_jsonl(
@@ -176,24 +172,6 @@ class DocumentDatabase:
 
         # return text
         return text
-
-    def query(self, query, context=2048, maxlen=2048, **kwargs):
-        # search db and get some context
-        matches = self.search(query, **kwargs)
-        chunks = {k: '; '.join(v) for k, v in matches.items()}
-        notes = '\n'.join([f'{k}: {v}' for k, v in chunks.items()])
-
-        # construct prompt
-        meta = 'Using a synthesis of your general knowledge and the text given below, answer the question posed at the end concisely.'
-        system = f'{DEFAULT_SYSTEM_PROMPT}\n\n{meta}'
-        user = f'TEXT:\n{notes}\n\nQUESTION: {query}'
-
-        # generate response
-        yield from self.model.generate(user, chat=system, context=context, maxlen=maxlen)
-
-    def iquery(self, query, **kwargs):
-        for s in self.query(query, **kwargs):
-            sprint(s)
 
 # index documents in a specified directory
 class FilesystemDatabase(DocumentDatabase):

@@ -168,15 +168,13 @@ class HuggingfaceModel:
             trim = 1 if input_ids.size(1) == context else 0
             input_ids = torch.cat((input_ids[:,trim:], index.unsqueeze(1)), dim=1)
 
-    def igenerate(self, query, **kwargs):
-        for s in self.generate(query, **kwargs):
-            sprint(s)
-
 # this has to take context at creation time
 # NOTE: llama2-70b needs n_gqa=8
 class LlamaCppModel:
-    def __init__(self, model_path, context=2048, n_gpu_layers=100, **kwargs):
-        self.model = Llama(model_path, n_ctx=context, n_gpu_layers=n_gpu_layers, **kwargs)
+    def __init__(self, model_path, context=2048, n_gpu_layers=100, verbose=False, **kwargs):
+        self.model = Llama(
+            model_path, n_ctx=context, n_gpu_layers=n_gpu_layers, verbose=verbose, **kwargs
+        )
 
     def generate(self, prompt, chat=True, context=None, maxlen=512, top_k=10, temp=1.0, **kwargs):
         # splice in chat instructions
@@ -192,6 +190,10 @@ class LlamaCppModel:
             choice, *_ = output['choices']
             text = choice['text']
             yield text.lstrip() if i <= 1 else text
+
+    def igenerate(self, query, **kwargs):
+        for s in self.generate(query, **kwargs):
+            sprint(s)
 
 ##
 ## Embeddings

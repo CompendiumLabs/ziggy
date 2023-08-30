@@ -6,6 +6,7 @@ testing
 store
 
 cpp/build
-cpp/libtorch
+cpp/libtorch_cpu
+cpp/libtorch_cuda
 cpp/dist
 cpp/*.egg-info

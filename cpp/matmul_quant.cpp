@@ -7,7 +7,7 @@ using namespace torch;
 #ifdef __AVX2__
 
 const int64_t BLOCK_SIZE = 16; // = 128 bit / 8 bit
-inline float_t dot_qint8_float32_cpu(int8_t* a, float_t* b, int64_t n, int64_t ta, int64_t tb, double scale, int64_t zero_point) {
+inline float_t dot_qint8_float_cpu(int8_t* a, float_t* b, int64_t n, int64_t ta, int64_t tb, double scale, int64_t zero_point) {
   float_t sum = 0.0;
   int8_t* ai = a;
   float_t* bi = b;
@@ -28,7 +28,7 @@ inline float_t dot_qint8_float32_cpu(int8_t* a, float_t* b, int64_t n, int64_t t
 
 #else // __AVX2__
 
-inline float_t dot_qint8_float32_cpu(int8_t* a, float_t* b, int64_t n, int64_t ta, int64_t tb, double scale, int64_t zero_point) {
+inline float_t dot_qint8_float_cpu(int8_t* a, float_t* b, int64_t n, int64_t ta, int64_t tb, double scale, int64_t zero_point) {
   float_t vala;
   float_t valb;
   float_t sum = 0.0;
@@ -46,7 +46,31 @@ inline float_t dot_qint8_float32_cpu(int8_t* a, float_t* b, int64_t n, int64_t t
 
 #endif // __AVX2__
 
-Tensor matmul_qint8_float32_cpu(Tensor a, Tensor b) {
+inline float_t dot_qint4_float_cpu(int32_t* a, float_t* b, int64_t n, int64_t ta, int64_t tb, double scale, int64_t zero_point) {
+  int64_t i1;
+  int64_t shift;
+  int32_t vala32;
+  int8_t vala8;
+  float_t vala;
+  float_t valb;
+  float_t sum = 0.0;
+  int32_t* ai = a;
+  float_t* bi = b;
+  for (int64_t i = 0; i < n; i++) {
+    i1 = i % 8;
+    if (i1 == 0) { shift = 28; vala32 = (*ai); }
+    else { shift -= 4; }
+    vala8 = (vala32 >> shift) & 0xf;
+    vala = (float)(vala8 - zero_point);
+    valb = (*bi);
+    sum += vala * valb;
+    if (i1 == 7) { ai += ta; }
+    bi += tb;
+  }
+  return scale*sum;
+}
+
+Tensor matmul_qint8_float_cpu(Tensor a, Tensor b) {
   at::ScalarType typea = a.scalar_type();
   at::ScalarType typeb = b.scalar_type();
   double scale = a.q_scale();
@@ -82,7 +106,7 @@ Tensor matmul_qint8_float32_cpu(Tensor a, Tensor b) {
       for (int64_t j = 0; j < sm; j++) {
         posa = a_ptr + i * tan;
         posb = b_ptr + j * tbm;
-        c_ptr[i * sm + j] = dot_qint8_float32_cpu(posa, posb, sk, tak, tbk, scale, zero_point);
+        c_ptr[i * sm + j] = dot_qint8_float_cpu(posa, posb, sk, tak, tbk, scale, zero_point);
       }
     }
   });

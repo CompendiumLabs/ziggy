@@ -27,7 +27,7 @@ void test_quantized_cuda() {
   Tensor b = torch::ones({m, dim}, at::device(torch::kCUDA).dtype(torch::kHalf));
 
   Tensor qa = quantize_per_tensor(a, 4.0/128, 0, at::kQInt8);
-  Tensor c = matmul_qint8_half_cuda(qa, b.transpose(0, 1));
+  Tensor c = matmul_qint8_cuda(qa, b.transpose(0, 1));
 
   std::cout << a.sizes() << " | " << a.mean() << std::endl;
   std::cout << b.sizes() << " | " << b.mean() << std::endl;

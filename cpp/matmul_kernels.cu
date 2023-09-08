@@ -78,7 +78,69 @@ __global__ void matmul_quant_float_kernel(packed_t* a, float* b, float* c, int64
   }
 }
 
-Tensor matmul_qint8_half_cuda(Tensor a, Tensor b) {
+template <unsigned int bits, typename packed_t>
+__global__ void quantize_and_pack_float(float* a, packed_t* b, int64_t sn, int64_t sk, int64_t tan, int64_t tak, double scale, int64_t zero_point) {
+  constexpr int pSize = 8 * sizeof(packed_t);
+  constexpr int qFact = pSize / bits;
+  constexpr packed_t amax = (1 << (bits - 1)) - 1;
+
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+
+  if (i < sn) {
+    packed_t* posa = a + i * tan;
+
+    for (int k = 0; k < sk / qFact; k++) {
+      // init zero bits
+      packed_t valb = 0;
+
+      // pack into packed_t-sized values
+      for (int s = 0; s < pSize; s += bits) {
+        float vala = (*posa);
+        int64_t vala_i = __float2int_rn(vala / scale) + zero_point; // handle int64 overflow?
+        vala_i = (vala_i > amax) ? amax : vala_i;
+        vala_i = (vala_i < -amax) ? -amax : vala_i;
+        valb |= (packed_t)vala_i << s;
+        posa += tak;
+      }
+
+      // store packed value
+      b[i * sn + k] = valb;
+    }
+  }
+}
+
+template <unsigned int bits, typename packed_t>
+__global__ void quantize_and_pack_half(__half* a, packed_t* b, int64_t sn, int64_t sk, int64_t tan, int64_t tak, double scale, int64_t zero_point) {
+  constexpr int pSize = 8 * sizeof(packed_t);
+  constexpr int qFact = pSize / bits;
+  constexpr packed_t amax = (1 << (bits - 1)) - 1;
+
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+
+  if (i < sn) {
+    packed_t* posa = a + i * tan;
+
+    for (int k = 0; k < sk / qFact; k++) {
+      // init zero bits
+      packed_t valb = 0;
+
+      // pack into packed_t-sized values
+      for (int s = 0; s < pSize; s += bits) {
+        float vala = (*posa);
+        int64_t vala_i = __half2int_rn(vala / scale) + zero_point; // handle int64 overflow?
+        vala_i = (vala_i > amax) ? amax : vala_i;
+        vala_i = (vala_i < -amax) ? -amax : vala_i;
+        valb |= (packed_t)vala_i << s;
+        posa += tak;
+      }
+
+      // store packed value
+      b[i * sn + k] = valb;
+    }
+  }
+}
+
+Tensor matmul_qint8_cuda(Tensor a, Tensor b) {
   at::ScalarType typea = a.scalar_type();
   at::ScalarType typeb = b.scalar_type();
   double scale = a.q_scale();
@@ -101,53 +163,70 @@ Tensor matmul_qint8_half_cuda(Tensor a, Tensor b) {
   int64_t tbk = stridesb[0];
   int64_t tbm = stridesb[1];
 
-  Tensor c = torch::empty({sn, sm}, at::device(kCUDA).dtype(torch::kHalf));
-
   int8_t* a_ptr = a.data_ptr<int8_t>();
-  at::Half* b_ptr0 = b.data_ptr<at::Half>();
-  at::Half* c_ptr0 = c.data_ptr<at::Half>();
-  __half* b_ptr = reinterpret_cast<__half*>(b_ptr0);
-  __half* c_ptr = reinterpret_cast<__half*>(c_ptr0);
 
   dim3 threads(kWarpSize, kWarpSize);
   dim3 blocks((sn + threads.x - 1) / threads.x, (sm + threads.y - 1) / threads.y);
-  matmul_quant_half_kernel<8, int8_t><<<blocks, threads>>>(a_ptr, b_ptr, c_ptr, sn, sm, sk, tan, tak, tbk, tbm, scale, zero_point);
 
-  return c;
+  switch (b.scalar_type()) {
+    case torch::ScalarType::Half: {
+      Tensor c = torch::empty({sn, sm}, at::device(kCUDA).dtype(torch::kHalf));
+
+      __half* b_ptr = reinterpret_cast<__half*>(b.data_ptr<at::Half>());
+      __half* c_ptr = reinterpret_cast<__half*>(c.data_ptr<at::Half>());
+
+      matmul_quant_half_kernel<8, int8_t><<<blocks, threads>>>(a_ptr, b_ptr, c_ptr, sn, sm, sk, tan, tak, tbk, tbm, scale, zero_point);
+
+      return c;
+    }
+    case torch::ScalarType::Float: {
+      Tensor c = torch::empty({sn, sm}, at::device(kCUDA).dtype(torch::kFloat));
+
+      float* b_ptr = b.data_ptr<float>();
+      float* c_ptr = c.data_ptr<float>();
+
+      matmul_quant_float_kernel<8, int8_t><<<blocks, threads>>>(a_ptr, b_ptr, c_ptr, sn, sm, sk, tan, tak, tbk, tbm, scale, zero_point);
+
+      return c;
+    }
+    default: {
+      throw std::runtime_error("Unsupported type");
+    }
+  }
 }
 
-Tensor matmul_qint8_float_cuda(Tensor a, Tensor b) {
-  at::ScalarType typea = a.scalar_type();
-  at::ScalarType typeb = b.scalar_type();
-  double scale = a.q_scale();
-  int64_t zero_point = a.q_zero_point();
-
+Tensor quantize_and_pack(Tensor a, int bits, double scale, int64_t zero_point) {
   at::IntArrayRef sizesa = a.sizes();
-  at::IntArrayRef sizesb = b.sizes();
   at::IntArrayRef stridesa = a.strides();
-  at::IntArrayRef stridesb = b.strides();
-
-  assert(typea == at::kQInt8);
-  assert(typeb == at::kFloat);
-  assert(sizesa[1] == sizesb[0]);
 
   int64_t sn = sizesa[0];
-  int64_t sm = sizesb[1];
   int64_t sk = sizesa[1];
   int64_t tan = stridesa[0];
   int64_t tak = stridesa[1];
-  int64_t tbk = stridesb[0];
-  int64_t tbm = stridesb[1];
 
-  Tensor c = torch::empty({sn, sm}, at::device(kCUDA).dtype(torch::kFloat));
+  dim3 threads(kWarpSize);
+  dim3 blocks((sn + threads.x - 1) / threads.x);
 
-  int8_t* a_ptr = a.data_ptr<int8_t>();
-  float* b_ptr = b.data_ptr<float>();
-  float* c_ptr = c.data_ptr<float>();
+  int64_t sk_packed = sk / (8 / bits);
+  Tensor b = torch::empty({sn, sk_packed}, at::device(kCUDA).dtype(torch::kInt8));
 
-  dim3 threads(kWarpSize, kWarpSize);
-  dim3 blocks((sn + threads.x - 1) / threads.x, (sm + threads.y - 1) / threads.y);
-  matmul_quant_float_kernel<8, int8_t><<<blocks, threads>>>(a_ptr, b_ptr, c_ptr, sn, sm, sk, tan, tak, tbk, tbm, scale, zero_point);
+  switch (a.scalar_type()) {
+    case torch::ScalarType::Float: {
+      float* a_ptr = a.data_ptr<float>();
+      int8_t* b_ptr = b.data_ptr<int8_t>();
 
-  return c;
+      quantize_and_pack_float<bits, int8_t><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, tan, tak, scale, zero_point);
+    }
+    case torch::ScalarType::Half: {
+      __half* a_ptr = reinterpret_cast<__half*>(a.data_ptr<at::Half>());
+      int8_t* b_ptr = b.data_ptr<int8_t>();
+
+      quantize_and_pack_half<bits, int8_t><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, tan, tak, scale, zero_point);
+    }
+    default: {
+      throw std::runtime_error("Unsupported type");
+    }
+  }
+
+  return b;
 }

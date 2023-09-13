@@ -4,6 +4,8 @@
 
 #include <torch/torch.h>
 
+#include "macros.h"
+
 using namespace torch;
 
 constexpr unsigned int kWarpSize = 32;
@@ -162,7 +164,6 @@ Tensor matmul_quant_cuda(Tensor a, Tensor b) {
   at::IntArrayRef stridesb = b.strides();
 
   assert(typea == at::kQUInt8);
-  assert(typeb == at::kHalf);
   assert(sizesa[1] == sizesb[0]);
 
   int64_t sn = sizesa[0];
@@ -178,9 +179,9 @@ Tensor matmul_quant_cuda(Tensor a, Tensor b) {
   dim3 threads(kWarpSize, kWarpSize);
   dim3 blocks((sn + threads.x - 1) / threads.x, (sm + threads.y - 1) / threads.y);
 
-  switch (b.scalar_type()) {
-    case torch::ScalarType::Half: {
-      Tensor c = torch::empty({sn, sm}, at::device(kCUDA).dtype(torch::kHalf));
+  switch (typeb) {
+    case at::kHalf: {
+      Tensor c = at::empty({sn, sm}, at::device(kCUDA).dtype(torch::kHalf));
 
       __half* b_ptr = reinterpret_cast<__half*>(b.data_ptr<at::Half>());
       __half* c_ptr = reinterpret_cast<__half*>(c.data_ptr<at::Half>());
@@ -189,8 +190,8 @@ Tensor matmul_quant_cuda(Tensor a, Tensor b) {
 
       return c;
     }
-    case torch::ScalarType::Float: {
-      Tensor c = torch::empty({sn, sm}, at::device(kCUDA).dtype(torch::kFloat));
+    case at::kFloat: {
+      Tensor c = at::empty({sn, sm}, at::device(kCUDA).dtype(torch::kFloat));
 
       float* b_ptr = b.data_ptr<float>();
       float* c_ptr = c.data_ptr<float>();
@@ -206,6 +207,7 @@ Tensor matmul_quant_cuda(Tensor a, Tensor b) {
 }
 
 Tensor quantize_and_pack(Tensor a, unsigned int bits, double scale, int64_t zero_point) {
+  at::ScalarType typea = a.scalar_type();
   at::IntArrayRef sizesa = a.sizes();
   at::IntArrayRef stridesa = a.strides();
 
@@ -218,12 +220,20 @@ Tensor quantize_and_pack(Tensor a, unsigned int bits, double scale, int64_t zero
   dim3 blocks((sn + threads.x - 1) / threads.x);
 
   int64_t sk_packed = sk / (8 / bits);
-  Tensor b = torch::empty({sn, sk_packed}, at::device(kCUDA).dtype(torch::kUInt8));
+  Tensor b = torch::empty({sn, sk_packed}, torch::device(kCUDA).dtype(torch::kUInt8));
 
-  switch (a.scalar_type()) {
-    case torch::ScalarType::Float: {
+  switch (typea) {
+    case torch::kFloat: {
       float* a_ptr = a.data_ptr<float>();
       uint8_t* b_ptr = b.data_ptr<uint8_t>();
+
+      /*
+      DISPATCH_BITWIDTH(bits, [&] {
+        quantize_and_pack_float<bit_width><<<blocks, threads>>>(
+          a_ptr, b_ptr, sn, sk, tan, tak, scale, zero_point
+        );
+      });
+      */
 
       switch (bits) {
         case 8:
@@ -238,7 +248,7 @@ Tensor quantize_and_pack(Tensor a, unsigned int bits, double scale, int64_t zero
 
       break;
     }
-    case torch::ScalarType::Half: {
+    case torch::kHalf: {
       __half* a_ptr = reinterpret_cast<__half*>(a.data_ptr<at::Half>());
       uint8_t* b_ptr = b.data_ptr<uint8_t>();
 

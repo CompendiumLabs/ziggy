@@ -1,22 +1,10 @@
-// matmul_quant testing
+// matmul_quant_cuda testing
 
-#include "matmul_quant.h"
+#include "matmul_quant_cuda.h"
 
 constexpr int64_t dim = 384;
 constexpr int64_t n = 1048576;
 constexpr int64_t m = 16;
-
-void test_quantized_cpu() {
-  Tensor a = torch::ones({n, dim});
-  Tensor b = torch::ones({m, dim});
-
-  Tensor qa = quantize_per_tensor(a, 4.0/128, 0, at::kQInt8);
-  Tensor c = matmul_quant_float_cpu(qa, b.transpose(0, 1));
-
-  std::cout << a.sizes() << " | " << a.mean() << std::endl;
-  std::cout << b.sizes() << " | " << b.mean() << std::endl;
-  std::cout << c.sizes() << " | " << c.mean() << std::endl;
-}
 
 void test_quantized_cuda() {
   int64_t dim = 384;
@@ -50,8 +38,6 @@ void test_pack_cuda() {
 }
 
 int main() {
-  test_quantized_cpu();
-  std::cout << std::endl;
   test_quantized_cuda();
   std::cout << std::endl;
   test_pack_cuda();

@@ -4,7 +4,14 @@
 
 #include <torch/torch.h>
 
+/*
 #include "macros.h"
+DISPATCH_BITWIDTH(bits, [&] {
+  quantize_and_pack_float<bit_width><<<blocks, threads>>>(
+    a_ptr, b_ptr, sn, sk, tan, tak, scale, zero_point
+  );
+});
+*/
 
 using namespace torch;
 
@@ -30,7 +37,7 @@ __global__ void matmul_quant_float_kernel(uint8_t* a, float* b, float* c, int64_
 
       // unpack into bits-sized values
       for (int s = 0; s < 8; s += bits) {
-        int8_t vala_i = (int)((vala >> s) & mask);
+        uint8_t vala_i = (uint8_t)((vala >> s) & mask);
         float vala_f = (float)(vala_i - zero_point);
         float valb_f = (*posb);
         sum += vala_f * valb_f;
@@ -65,7 +72,7 @@ __global__ void matmul_quant_half_kernel(uint8_t* a, __half* b, __half* c, int64
 
       // unpack into bits-sized values
       for (int s = 0; s < 8; s += bits) {
-        int vala_i = (int)((vala >> s) & mask);
+        uint8_t vala_i = (uint8_t)((vala >> s) & mask);
         __half vala_h = __float2half((float)(vala_i - zero_point));
         __half valb_h = (*posb);
         sum = __hadd(sum, __hmul(vala_h, valb_h));
@@ -226,14 +233,6 @@ Tensor quantize_and_pack(Tensor a, unsigned int bits, double scale, int64_t zero
     case torch::kFloat: {
       float* a_ptr = a.data_ptr<float>();
       uint8_t* b_ptr = b.data_ptr<uint8_t>();
-
-      /*
-      DISPATCH_BITWIDTH(bits, [&] {
-        quantize_and_pack_float<bit_width><<<blocks, threads>>>(
-          a_ptr, b_ptr, sn, sk, tan, tak, scale, zero_point
-        );
-      });
-      */
 
       switch (bits) {
         case 8:

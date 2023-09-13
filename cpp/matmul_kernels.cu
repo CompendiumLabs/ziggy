@@ -13,6 +13,7 @@ __global__ void matmul_quant_half_kernel(packed_t* a, __half* b, __half* c, int6
   constexpr int pSize = 8 * sizeof(packed_t);
   constexpr int qFact = pSize / bits;
   constexpr packed_t mask = (1 << bits) - 1;
+  const int sk_packed = sk / qFact;
 
   int i = blockIdx.x * blockDim.x + threadIdx.x;
   int j = blockIdx.y * blockDim.y + threadIdx.y;
@@ -22,7 +23,7 @@ __global__ void matmul_quant_half_kernel(packed_t* a, __half* b, __half* c, int6
     __half* posb = b + j * tbm;
     __half sum = __float2half(0.0f);
 
-    for (int k = 0; k < sk / qFact; k++) {
+    for (int k = 0; k < sk_packed; k++) {
       // load packed values
       packed_t vala = (*posa);
 
@@ -48,6 +49,7 @@ __global__ void matmul_quant_float_kernel(packed_t* a, float* b, float* c, int64
   constexpr int pSize = 8 * sizeof(packed_t);
   constexpr int qFact = pSize / bits;
   constexpr packed_t mask = (1 << bits) - 1;
+  const int sk_packed = sk / qFact;
 
   int i = blockIdx.x * blockDim.x + threadIdx.x;
   int j = blockIdx.y * blockDim.y + threadIdx.y;
@@ -57,7 +59,7 @@ __global__ void matmul_quant_float_kernel(packed_t* a, float* b, float* c, int64
     float* posb = b + j * tbm;
     float sum = 0.0;
 
-    for (int k = 0; k < sk / qFact; k++) {
+    for (int k = 0; k < sk_packed; k++) {
       // load packed values
       packed_t vala = (*posa);
 
@@ -78,64 +80,73 @@ __global__ void matmul_quant_float_kernel(packed_t* a, float* b, float* c, int64
   }
 }
 
-template <unsigned int bits, typename packed_t>
-__global__ void quantize_and_pack_float(float* a, packed_t* b, int64_t sn, int64_t sk, int64_t tan, int64_t tak, double scale, int64_t zero_point) {
-  constexpr int pSize = 8 * sizeof(packed_t);
-  constexpr int qFact = pSize / bits;
-  constexpr packed_t amax = (1 << (bits - 1)) - 1;
+// we need to use unsigned intN packing here
+template <unsigned int bits>
+__global__ void quantize_and_pack_float(float* a, uint8_t* b, int64_t sn, int64_t sk, int64_t tan, int64_t tak, double scale, int64_t zero_point) {
+  constexpr int qFact = 8 / bits;
+  constexpr int pMax = (1 << (bits - 1)) - 1;
+  constexpr float pMax_f = (float)pMax;
+
+  const int sk_packed = sk / qFact;
+  const float scale_f = (float)scale;
+  const float zero_point_f = (float)zero_point;
 
   int i = blockIdx.x * blockDim.x + threadIdx.x;
 
   if (i < sn) {
-    packed_t* posa = a + i * tan;
+    float* posa = a + i * tan;
 
-    for (int k = 0; k < sk / qFact; k++) {
+    for (int k = 0; k < sk_packed; k++) {
       // init zero bits
-      packed_t valb = 0;
+      uint8_t valb = 0;
 
       // pack into packed_t-sized values
-      for (int s = 0; s < pSize; s += bits) {
+      for (int s = 0; s < 8; s += bits) {
         float vala = (*posa);
-        int64_t vala_i = __float2int_rn(vala / scale) + zero_point; // handle int64 overflow?
-        vala_i = (vala_i > amax) ? amax : vala_i;
-        vala_i = (vala_i < -amax) ? -amax : vala_i;
-        valb |= (packed_t)vala_i << s;
+        vala = vala / scale_f + zero_point_f;
+        vala = max(-pMax_f, min(pMax_f, vala)) + pMax_f;
+        uint8_t vala_i = __float2uint_rn(vala);
+        valb |= vala_i << s;
         posa += tak;
       }
 
       // store packed value
-      b[i * sn + k] = valb;
+      b[i * sk_packed + k] = valb;
     }
   }
 }
 
-template <unsigned int bits, typename packed_t>
-__global__ void quantize_and_pack_half(__half* a, packed_t* b, int64_t sn, int64_t sk, int64_t tan, int64_t tak, double scale, int64_t zero_point) {
-  constexpr int pSize = 8 * sizeof(packed_t);
-  constexpr int qFact = pSize / bits;
-  constexpr packed_t amax = (1 << (bits - 1)) - 1;
+template <unsigned int bits>
+__global__ void quantize_and_pack_half(__half* a, uint8_t* b, int64_t sn, int64_t sk, int64_t tan, int64_t tak, double scale, int64_t zero_point) {
+  constexpr int qFact = 8 / bits;
+  constexpr int pMax = (1 << (bits - 1)) - 1;
+
+  const int sk_packed = sk / qFact;
+  const __half pMax_h = (__half)pMax;
+  const __half scale_h = __double2half(scale);
+  const __half zerop_h = __int2half_rn(zero_point);
 
   int i = blockIdx.x * blockDim.x + threadIdx.x;
 
   if (i < sn) {
-    packed_t* posa = a + i * tan;
+    __half* posa = a + i * tan;
 
-    for (int k = 0; k < sk / qFact; k++) {
+    for (int k = 0; k < sk_packed; k++) {
       // init zero bits
-      packed_t valb = 0;
+      uint8_t valb = 0;
 
       // pack into packed_t-sized values
-      for (int s = 0; s < pSize; s += bits) {
-        float vala = (*posa);
-        int64_t vala_i = __half2int_rn(vala / scale) + zero_point; // handle int64 overflow?
-        vala_i = (vala_i > amax) ? amax : vala_i;
-        vala_i = (vala_i < -amax) ? -amax : vala_i;
-        valb |= (packed_t)vala_i << s;
+      for (int s = 0; s < 8; s += bits) {
+        __half vala = (*posa);
+        vala = vala / scale_h + zerop_h;
+        vala = __hmax(-pMax_h, __hmin(pMax_h, vala)) + pMax_h;
+        uint8_t vala_i = __half2int_rn(vala);
+        valb |= vala_i << s;
         posa += tak;
       }
 
       // store packed value
-      b[i * sn + k] = valb;
+      b[i * sk_packed + k] = valb;
     }
   }
 }
@@ -190,12 +201,12 @@ Tensor matmul_qint8_cuda(Tensor a, Tensor b) {
       return c;
     }
     default: {
-      throw std::runtime_error("Unsupported type");
+      throw std::runtime_error("Unsupported type for comparison tensors");
     }
   }
 }
 
-Tensor quantize_and_pack(Tensor a, int bits, double scale, int64_t zero_point) {
+Tensor quantize_and_pack(Tensor a, unsigned int bits, double scale, int64_t zero_point) {
   at::IntArrayRef sizesa = a.sizes();
   at::IntArrayRef stridesa = a.strides();
 
@@ -208,23 +219,45 @@ Tensor quantize_and_pack(Tensor a, int bits, double scale, int64_t zero_point) {
   dim3 blocks((sn + threads.x - 1) / threads.x);
 
   int64_t sk_packed = sk / (8 / bits);
-  Tensor b = torch::empty({sn, sk_packed}, at::device(kCUDA).dtype(torch::kInt8));
+  Tensor b = torch::empty({sn, sk_packed}, at::device(kCUDA).dtype(torch::kUInt8));
 
   switch (a.scalar_type()) {
     case torch::ScalarType::Float: {
       float* a_ptr = a.data_ptr<float>();
-      int8_t* b_ptr = b.data_ptr<int8_t>();
+      uint8_t* b_ptr = b.data_ptr<uint8_t>();
 
-      quantize_and_pack_float<bits, int8_t><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, tan, tak, scale, zero_point);
+      switch (bits) {
+        case 8:
+          quantize_and_pack_float<8><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, tan, tak, scale, zero_point);
+          break;
+        case 4:
+          quantize_and_pack_float<4><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, tan, tak, scale, zero_point);
+          break;
+        default:
+          throw std::runtime_error("Unsupported number of quantization bits");
+      }
+
+      break;
     }
     case torch::ScalarType::Half: {
       __half* a_ptr = reinterpret_cast<__half*>(a.data_ptr<at::Half>());
-      int8_t* b_ptr = b.data_ptr<int8_t>();
+      uint8_t* b_ptr = b.data_ptr<uint8_t>();
 
-      quantize_and_pack_half<bits, int8_t><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, tan, tak, scale, zero_point);
+      switch (bits) {
+        case 8:
+          quantize_and_pack_half<8><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, tan, tak, scale, zero_point);
+          break;
+        case 4:
+          quantize_and_pack_half<4><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, tan, tak, scale, zero_point);
+          break;
+        default:
+          throw std::runtime_error("Unsupported number of quantization bits");
+      }
+
+      break;
     }
     default: {
-      throw std::runtime_error("Unsupported type");
+      throw std::runtime_error("Unsupported type for comparison tensors");
     }
   }
 

@@ -34,8 +34,25 @@ void test_quantized_cuda() {
   std::cout << c.sizes() << " | " << c.mean() << std::endl;
 }
 
+void test_pack_cuda() {
+  int64_t dim = 8;
+  int64_t n = 4;
+
+  unsigned int bits = 4;
+  double scale = 0.5;
+  int64_t zero_point = 0;
+
+  Tensor a = torch::ones({n, dim}, at::device(torch::kCUDA).dtype(torch::kFloat));
+  Tensor qa = quantize_and_pack(a, bits, scale, zero_point);
+
+  std::cout << a.sizes() << " | " << a.mean() << std::endl;
+  std::cout << qa.sizes() << std::endl << qa << std::endl;
+}
+
 int main() {
   test_quantized_cpu();
   std::cout << std::endl;
   test_quantized_cuda();
+  std::cout << std::endl;
+  test_pack_cuda();
 }

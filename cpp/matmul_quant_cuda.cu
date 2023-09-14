@@ -21,7 +21,6 @@ template <unsigned int bits>
 __global__ void matmul_quant_float_kernel(uint8_t* a, float* b, float* c, int64_t sn, int64_t sm, int64_t sk, int64_t tan, int64_t tak, int64_t tbk, int64_t tbm, float scale, float zero_point) {
   constexpr int qFact = 8 / bits;
   constexpr uint8_t mask = (1 << bits) - 1;
-  const int sk_packed = sk / qFact;
 
   int i = blockIdx.x * blockDim.x + threadIdx.x;
   int j = blockIdx.y * blockDim.y + threadIdx.y;
@@ -31,7 +30,7 @@ __global__ void matmul_quant_float_kernel(uint8_t* a, float* b, float* c, int64_
     float* posb = b + j * tbm;
     float sum = 0.0f;
 
-    for (int k = 0; k < sk_packed; k++) {
+    for (int k = 0; k < sk; k++) {
       // load packed values
       uint8_t vala = (*posa);
 
@@ -56,7 +55,6 @@ template <unsigned int bits>
 __global__ void matmul_quant_half_kernel(uint8_t* a, __half* b, __half* c, int64_t sn, int64_t sm, int64_t sk, int64_t tan, int64_t tak, int64_t tbk, int64_t tbm, float scale, float zero_point) {
   constexpr int qFact = 8 / bits;
   constexpr uint8_t mask = (1 << bits) - 1;
-  const int sk_packed = sk / qFact;
 
   __half scale_h = __float2half(scale);
 
@@ -68,7 +66,7 @@ __global__ void matmul_quant_half_kernel(uint8_t* a, __half* b, __half* c, int64
     __half* posb = b + j * tbm;
     __half sum = __float2half(0.0f);
 
-    for (int k = 0; k < sk_packed; k++) {
+    for (int k = 0; k < sk; k++) {
       // load packed values
       uint8_t vala = (*posa);
 
@@ -159,19 +157,17 @@ __global__ void quantize_and_pack_half(__half* a, uint8_t* b, int64_t sn, int64_
   }
 }
 
-Tensor matmul_quant_cuda(Tensor a, Tensor b) {
+Tensor matmul_quant_cuda(Tensor a, Tensor b, unsigned int bits, float scale, float zero_point) {
   at::ScalarType typea = a.scalar_type();
   at::ScalarType typeb = b.scalar_type();
-  float scale = (float)a.q_scale();
-  float zero_point = (float)a.q_zero_point();
 
   at::IntArrayRef sizesa = a.sizes();
   at::IntArrayRef sizesb = b.sizes();
   at::IntArrayRef stridesa = a.strides();
   at::IntArrayRef stridesb = b.strides();
 
-  assert(typea == at::kQUInt8);
-  assert(sizesa[1] == sizesb[0]);
+  assert(typea == torch::kUInt8);
+  assert((8 / bits) * sizesa[1] == sizesb[0]);
 
   int64_t sn = sizesa[0];
   int64_t sm = sizesb[1];
@@ -193,7 +189,19 @@ Tensor matmul_quant_cuda(Tensor a, Tensor b) {
       __half* b_ptr = reinterpret_cast<__half*>(b.data_ptr<at::Half>());
       __half* c_ptr = reinterpret_cast<__half*>(c.data_ptr<at::Half>());
 
-      matmul_quant_half_kernel<8><<<blocks, threads>>>(a_ptr, b_ptr, c_ptr, sn, sm, sk, tan, tak, tbk, tbm, scale, zero_point);
+      switch (bits) {
+        case 8: {
+          matmul_quant_half_kernel<8><<<blocks, threads>>>(a_ptr, b_ptr, c_ptr, sn, sm, sk, tan, tak, tbk, tbm, scale, zero_point);
+          break;
+        }
+        case 4: {
+          matmul_quant_half_kernel<4><<<blocks, threads>>>(a_ptr, b_ptr, c_ptr, sn, sm, sk, tan, tak, tbk, tbm, scale, zero_point);
+          break;
+        }
+        default: {
+          throw std::runtime_error("Unsupported number of quantization bits");
+        }
+      }
 
       return c;
     }
@@ -203,7 +211,19 @@ Tensor matmul_quant_cuda(Tensor a, Tensor b) {
       float* b_ptr = b.data_ptr<float>();
       float* c_ptr = c.data_ptr<float>();
 
-      matmul_quant_float_kernel<8><<<blocks, threads>>>(a_ptr, b_ptr, c_ptr, sn, sm, sk, tan, tak, tbk, tbm, scale, zero_point);
+      switch (bits) {
+        case 8: {
+          matmul_quant_float_kernel<8><<<blocks, threads>>>(a_ptr, b_ptr, c_ptr, sn, sm, sk, tan, tak, tbk, tbm, scale, zero_point);
+          break;
+        }
+        case 4: {
+          matmul_quant_float_kernel<4><<<blocks, threads>>>(a_ptr, b_ptr, c_ptr, sn, sm, sk, tan, tak, tbk, tbm, scale, zero_point);
+          break;
+        }
+        default: {
+          throw std::runtime_error("Unsupported number of quantization bits");
+        }
+      }
 
       return c;
     }

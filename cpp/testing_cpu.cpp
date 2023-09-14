@@ -10,8 +10,12 @@ void test_quantized_cpu() {
   Tensor a = torch::ones({n, dim});
   Tensor b = torch::ones({m, dim});
 
-  Tensor qa = quantize_per_tensor(a, 4.0/128, 0, at::kQInt8);
-  Tensor c = matmul_quant_float_cpu(qa, b.transpose(0, 1));
+  unsigned int bits = 8;
+  float scale = 1.0f;
+  float zero_point = 7.0f;
+
+  Tensor qa = quantize_and_pack_cpu(a, bits, scale, zero_point);
+  Tensor c = matmul_quant_float_cpu(qa, b.transpose(0, 1), bits, scale, zero_point);
 
   std::cout << a.sizes() << " | " << a.mean() << std::endl;
   std::cout << b.sizes() << " | " << b.mean() << std::endl;

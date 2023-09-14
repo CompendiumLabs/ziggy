@@ -18,15 +18,14 @@ using namespace torch;
 constexpr unsigned int kWarpSize = 32;
 
 template <unsigned int bits>
-__global__ void matmul_quant_float_kernel(uint8_t* a, float* b, float* c, int64_t sn, int64_t sm, int64_t sk, int64_t tan, int64_t tak, int64_t tbk, int64_t tbm, float scale, float zero_point) {
-  constexpr int qFact = 8 / bits;
+__global__ void matmul_quant_float_kernel(uint8_t* a, float* b, float* c, int sn, int sm, int sk, int tan, int tak, int tbk, int tbm, float scale, float zero_point) {
   constexpr uint8_t mask = (1 << bits) - 1;
 
   int i = blockIdx.x * blockDim.x + threadIdx.x;
   int j = blockIdx.y * blockDim.y + threadIdx.y;
 
   if (i < sn && j < sm) {
-    uint8_t* posa = a + i * tan / qFact;
+    uint8_t* posa = a + i * tan;
     float* posb = b + j * tbm;
     float sum = 0.0f;
 
@@ -52,8 +51,7 @@ __global__ void matmul_quant_float_kernel(uint8_t* a, float* b, float* c, int64_
 }
 
 template <unsigned int bits>
-__global__ void matmul_quant_half_kernel(uint8_t* a, __half* b, __half* c, int64_t sn, int64_t sm, int64_t sk, int64_t tan, int64_t tak, int64_t tbk, int64_t tbm, float scale, float zero_point) {
-  constexpr int qFact = 8 / bits;
+__global__ void matmul_quant_half_kernel(uint8_t* a, __half* b, __half* c, int sn, int sm, int sk, int tan, int tak, int tbk, int tbm, float scale, float zero_point) {
   constexpr uint8_t mask = (1 << bits) - 1;
 
   __half scale_h = __float2half(scale);
@@ -62,7 +60,7 @@ __global__ void matmul_quant_half_kernel(uint8_t* a, __half* b, __half* c, int64
   int j = blockIdx.y * blockDim.y + threadIdx.y;
 
   if (i < sn && j < sm) {
-    uint8_t* posa = a + i * tan / qFact;
+    uint8_t* posa = a + i * tan;
     __half* posb = b + j * tbm;
     __half sum = __float2half(0.0f);
 
@@ -89,19 +87,19 @@ __global__ void matmul_quant_half_kernel(uint8_t* a, __half* b, __half* c, int64
 
 // we need to use unsigned intN packing here
 template <unsigned int bits>
-__global__ void quantize_and_pack_float(float* a, uint8_t* b, int64_t sn, int64_t sk, int64_t tan, int64_t tak, float scale, float zero_point) {
+__global__ void quantize_and_pack_float(float* a, uint8_t* b, int sn, int sk, int tan, int tak, float scale, float zero_point) {
   constexpr int qFact = 8 / bits;
   constexpr int pMax = (1 << bits) - 1;
   constexpr float pMax_f = (float)pMax;
 
-  const int sk_packed = sk / qFact;
+  const int sk_p = sk / qFact;
 
   int i = blockIdx.x * blockDim.x + threadIdx.x;
 
   if (i < sn) {
     float* posa = a + i * tan;
 
-    for (int k = 0; k < sk_packed; k++) {
+    for (int k = 0; k < sk_p; k++) {
       // init zero bits
       uint8_t valb = 0;
 
@@ -116,17 +114,17 @@ __global__ void quantize_and_pack_float(float* a, uint8_t* b, int64_t sn, int64_
       }
 
       // store packed value
-      b[i * sk_packed + k] = valb;
+      b[i * sk_p + k] = valb;
     }
   }
 }
 
 template <unsigned int bits>
-__global__ void quantize_and_pack_half(__half* a, uint8_t* b, int64_t sn, int64_t sk, int64_t tan, int64_t tak, float scale, float zero_point) {
+__global__ void quantize_and_pack_half(__half* a, uint8_t* b, int sn, int sk, int tan, int tak, float scale, float zero_point) {
   constexpr int qFact = 8 / bits;
   constexpr int pMax = (1 << bits) - 1;
 
-  const int sk_packed = sk / qFact;
+  const int sk_p = sk / qFact;
   const __half scale_h = __float2half(scale);
   const __half zero_point_h = __float2half(zero_point);
   const __half zero_h = __float2half(0.0f);
@@ -137,7 +135,7 @@ __global__ void quantize_and_pack_half(__half* a, uint8_t* b, int64_t sn, int64_
   if (i < sn) {
     __half* posa = a + i * tan;
 
-    for (int k = 0; k < sk_packed; k++) {
+    for (int k = 0; k < sk_p; k++) {
       // init zero bits
       uint8_t valb = 0;
 
@@ -152,7 +150,7 @@ __global__ void quantize_and_pack_half(__half* a, uint8_t* b, int64_t sn, int64_
       }
 
       // store packed value
-      b[i * sk_packed + k] = valb;
+      b[i * sk_p + k] = valb;
     }
   }
 }
@@ -169,13 +167,13 @@ Tensor matmul_quant_cuda(Tensor a, Tensor b, unsigned int bits, float scale, flo
   assert(typea == torch::kUInt8);
   assert((8 / bits) * sizesa[1] == sizesb[0]);
 
-  int64_t sn = sizesa[0];
-  int64_t sm = sizesb[1];
-  int64_t sk = sizesa[1];
-  int64_t tan = stridesa[0];
-  int64_t tak = stridesa[1];
-  int64_t tbk = stridesb[0];
-  int64_t tbm = stridesb[1];
+  int sn = sizesa[0];
+  int sm = sizesb[1];
+  int sk = sizesa[1];
+  int tan = stridesa[0];
+  int tak = stridesa[1];
+  int tbk = stridesb[0];
+  int tbm = stridesb[1];
 
   uint8_t* a_ptr = a.data_ptr<uint8_t>();
 
@@ -233,20 +231,20 @@ Tensor matmul_quant_cuda(Tensor a, Tensor b, unsigned int bits, float scale, flo
   }
 }
 
-Tensor quantize_and_pack(Tensor a, unsigned int bits, float scale, float zero_point) {
+Tensor quantize_and_pack_cuda(Tensor a, unsigned int bits, float scale, float zero_point) {
   at::ScalarType typea = a.scalar_type();
   at::IntArrayRef sizesa = a.sizes();
   at::IntArrayRef stridesa = a.strides();
 
-  int64_t sn = sizesa[0];
-  int64_t sk = sizesa[1];
-  int64_t tan = stridesa[0];
-  int64_t tak = stridesa[1];
+  int sn = sizesa[0];
+  int sk = sizesa[1];
+  int tan = stridesa[0];
+  int tak = stridesa[1];
 
   dim3 threads(kWarpSize);
   dim3 blocks((sn + threads.x - 1) / threads.x);
 
-  int64_t sk_packed = sk / (8 / bits);
+  int sk_packed = sk / (8 / bits);
   Tensor b = torch::empty({sn, sk_packed}, torch::device(kCUDA).dtype(torch::kUInt8));
 
   switch (typea) {

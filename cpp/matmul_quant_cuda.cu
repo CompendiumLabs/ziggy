@@ -18,7 +18,7 @@ using namespace torch;
 constexpr unsigned int kWarpSize = 32;
 
 template <unsigned int bits>
-__global__ void matmul_quant_float_kernel(uint8_t* a, float* b, float* c, int64_t sn, int64_t sm, int64_t sk, int64_t tan, int64_t tak, int64_t tbk, int64_t tbm, double scale, int64_t zero_point) {
+__global__ void matmul_quant_float_kernel(uint8_t* a, float* b, float* c, int64_t sn, int64_t sm, int64_t sk, int64_t tan, int64_t tak, int64_t tbk, int64_t tbm, float scale, float zero_point) {
   constexpr int qFact = 8 / bits;
   constexpr uint8_t mask = (1 << bits) - 1;
   const int sk_packed = sk / qFact;
@@ -38,7 +38,7 @@ __global__ void matmul_quant_float_kernel(uint8_t* a, float* b, float* c, int64_
       // unpack into bits-sized values
       for (int s = 0; s < 8; s += bits) {
         uint8_t vala_i = (uint8_t)((vala >> s) & mask);
-        float vala_f = (float)(vala_i - zero_point);
+        float vala_f = (float)vala_i - zero_point;
         float valb_f = (*posb);
         sum += vala_f * valb_f;
         posb += tbk;
@@ -53,10 +53,12 @@ __global__ void matmul_quant_float_kernel(uint8_t* a, float* b, float* c, int64_
 }
 
 template <unsigned int bits>
-__global__ void matmul_quant_half_kernel(uint8_t* a, __half* b, __half* c, int64_t sn, int64_t sm, int64_t sk, int64_t tan, int64_t tak, int64_t tbk, int64_t tbm, double scale, int64_t zero_point) {
+__global__ void matmul_quant_half_kernel(uint8_t* a, __half* b, __half* c, int64_t sn, int64_t sm, int64_t sk, int64_t tan, int64_t tak, int64_t tbk, int64_t tbm, float scale, float zero_point) {
   constexpr int qFact = 8 / bits;
   constexpr uint8_t mask = (1 << bits) - 1;
   const int sk_packed = sk / qFact;
+
+  __half scale_h = __float2half(scale);
 
   int i = blockIdx.x * blockDim.x + threadIdx.x;
   int j = blockIdx.y * blockDim.y + threadIdx.y;
@@ -73,7 +75,7 @@ __global__ void matmul_quant_half_kernel(uint8_t* a, __half* b, __half* c, int64
       // unpack into bits-sized values
       for (int s = 0; s < 8; s += bits) {
         uint8_t vala_i = (uint8_t)((vala >> s) & mask);
-        __half vala_h = __float2half((float)(vala_i - zero_point));
+        __half vala_h = __float2half((float)vala_i - zero_point);
         __half valb_h = (*posb);
         sum = __hadd(sum, __hmul(vala_h, valb_h));
         posb += tbk;
@@ -83,20 +85,18 @@ __global__ void matmul_quant_half_kernel(uint8_t* a, __half* b, __half* c, int64
       posa += tak;
     }
 
-    c[i * sm + j] = __hmul(__double2half(scale), sum);
+    c[i * sm + j] = __hmul(scale_h, sum);
   }
 }
 
 // we need to use unsigned intN packing here
 template <unsigned int bits>
-__global__ void quantize_and_pack_float(float* a, uint8_t* b, int64_t sn, int64_t sk, int64_t tan, int64_t tak, double scale, int64_t zero_point) {
+__global__ void quantize_and_pack_float(float* a, uint8_t* b, int64_t sn, int64_t sk, int64_t tan, int64_t tak, float scale, float zero_point) {
   constexpr int qFact = 8 / bits;
   constexpr int pMax = (1 << bits) - 1;
   constexpr float pMax_f = (float)pMax;
 
   const int sk_packed = sk / qFact;
-  const float scale_f = (float)scale;
-  const float zero_point_f = (float)zero_point;
 
   int i = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -110,7 +110,7 @@ __global__ void quantize_and_pack_float(float* a, uint8_t* b, int64_t sn, int64_
       // pack into packed_t-sized values
       for (int s = 0; s < 8; s += bits) {
         float vala = (*posa);
-        vala = vala / scale_f + zero_point_f;
+        vala = vala / scale + zero_point;
         vala = max(0.0f, min(pMax_f, vala));
         uint8_t vala_i = __float2uint_rn(vala);
         valb |= vala_i << s;
@@ -124,13 +124,13 @@ __global__ void quantize_and_pack_float(float* a, uint8_t* b, int64_t sn, int64_
 }
 
 template <unsigned int bits>
-__global__ void quantize_and_pack_half(__half* a, uint8_t* b, int64_t sn, int64_t sk, int64_t tan, int64_t tak, double scale, int64_t zero_point) {
+__global__ void quantize_and_pack_half(__half* a, uint8_t* b, int64_t sn, int64_t sk, int64_t tan, int64_t tak, float scale, float zero_point) {
   constexpr int qFact = 8 / bits;
   constexpr int pMax = (1 << bits) - 1;
 
   const int sk_packed = sk / qFact;
-  const __half scale_h = __double2half(scale);
-  const __half zero_point_h = __int2half_rn(zero_point);
+  const __half scale_h = __float2half(scale);
+  const __half zero_point_h = __float2half(zero_point);
   const __half zero_h = __float2half(0.0f);
   const __half pMax_h = (__half)pMax;
 
@@ -162,8 +162,8 @@ __global__ void quantize_and_pack_half(__half* a, uint8_t* b, int64_t sn, int64_
 Tensor matmul_quant_cuda(Tensor a, Tensor b) {
   at::ScalarType typea = a.scalar_type();
   at::ScalarType typeb = b.scalar_type();
-  double scale = a.q_scale();
-  int64_t zero_point = a.q_zero_point();
+  float scale = (float)a.q_scale();
+  float zero_point = (float)a.q_zero_point();
 
   at::IntArrayRef sizesa = a.sizes();
   at::IntArrayRef sizesb = b.sizes();
@@ -213,7 +213,7 @@ Tensor matmul_quant_cuda(Tensor a, Tensor b) {
   }
 }
 
-Tensor quantize_and_pack(Tensor a, unsigned int bits, double scale, int64_t zero_point) {
+Tensor quantize_and_pack(Tensor a, unsigned int bits, float scale, float zero_point) {
   at::ScalarType typea = a.scalar_type();
   at::IntArrayRef sizesa = a.sizes();
   at::IntArrayRef stridesa = a.strides();

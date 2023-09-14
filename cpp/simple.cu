@@ -8,7 +8,7 @@ using namespace torch;
 
 constexpr unsigned int kWarpSize = 32;
 
-__global__ void pack_float(float* a, uint8_t* b, int64_t sn, double scale, int64_t zero_point) {
+__global__ void pack_float(float* a, uint8_t* b, int64_t sn, float scale, float zero_point) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
 
     constexpr unsigned int bits = 4;
@@ -24,7 +24,7 @@ __global__ void pack_float(float* a, uint8_t* b, int64_t sn, double scale, int64
     }
 }
 
-Tensor pack(Tensor a, double scale, int64_t zero_point) {
+Tensor pack(Tensor a, float scale, float zero_point) {
     at::IntArrayRef sizes = a.sizes();
     int64_t sn = sizes[0];
     Tensor b = torch::empty({sn}, at::device(kCUDA).dtype(torch::kUInt8));

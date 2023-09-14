@@ -27,8 +27,8 @@ void test_pack_cuda() {
   int64_t n = 4;
 
   unsigned int bits = 4;
-  double scale = 0.5;
-  int64_t zero_point = 7;
+  float scale = 0.5f;
+  float zero_point = 7.0f;
 
   Tensor a = torch::ones({n, dim}, at::device(torch::kCUDA).dtype(torch::kFloat));
   Tensor qa = quantize_and_pack(a, bits, scale, zero_point);

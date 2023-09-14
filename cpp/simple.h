@@ -2,4 +2,4 @@
 
 using namespace torch;
 
-Tensor pack(Tensor a, double scale, int64_t zero_point);
+Tensor pack(Tensor a, float scale, float zero_point);

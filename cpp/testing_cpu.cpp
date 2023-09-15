@@ -12,7 +12,7 @@ void test_quantized_cpu() {
 
   unsigned int bits = 8;
   float scale = 1.0f;
-  float zero_point = 7.0f;
+  float zero_point = 127.0f;
 
   Tensor qa = quantize_and_pack_cpu(a, bits, scale, zero_point);
   Tensor c = matmul_quant_float_cpu(qa, b.transpose(0, 1), bits, scale, zero_point);

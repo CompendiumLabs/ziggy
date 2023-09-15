@@ -241,11 +241,14 @@ Tensor quantize_and_pack_cuda(Tensor a, unsigned int bits, float scale, float ze
   int tan = stridesa[0];
   int tak = stridesa[1];
 
+  int sk_p = sk / (8 / bits);
+  int tbm = sk_p;
+  int tbk = 1;
+
   dim3 threads(kWarpSize);
   dim3 blocks((sn + threads.x - 1) / threads.x);
 
-  int sk_packed = sk / (8 / bits);
-  Tensor b = torch::empty({sn, sk_packed}, torch::device(kCUDA).dtype(torch::kUInt8));
+  Tensor b = torch::empty({sn, sk_p}, torch::device(kCUDA).dtype(torch::kUInt8));
 
   switch (typea) {
     case torch::kFloat: {

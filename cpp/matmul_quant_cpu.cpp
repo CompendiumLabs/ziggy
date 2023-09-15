@@ -6,16 +6,19 @@ using namespace torch;
 
 #ifdef __AVX2__
 
+// sub-8 quantization is tricky with AVX2
+
 const int BLOCK_SIZE = 16; // = 128 bit / 8 bit
-inline float dot_qint8_float_cpu(int8_t* a, float* b, int n, int ta, int tb, float scale, float zero_point) {
+template <unsigned int bits>
+inline float dot_quant_float_cpu(uint8_t* a, float* b, int n, int ta, int tb, float scale, float zero_point) {
   float sum = 0.0;
-  int8_t* ai = a;
+  uint8_t* ai = a;
   float* bi = b;
   __m512 zero_f32 = _mm512_set1_ps(zero_point);
   for (int i = 0; i < n / BLOCK_SIZE; i++) {
-    __m128i a_vec_i8 = _mm_loadu_si128((__m128i_u*)ai); // a
+    __m128i a_vec_i8 = _mm_loadu_si128((__m128i*)ai); // a
     __m512 b_vec_f32 = _mm512_loadu_ps(bi); // b
-    __m512i a_vec_i32 = _mm512_cvtepi8_epi32(a_vec_i8); // int(a)
+    __m512i a_vec_i32 = _mm512_cvtepu8_epi32(a_vec_i8); // int(a)
     __m512 a_vec_f32 = _mm512_cvtepi32_ps(a_vec_i32); // float(a)
     __m512 a_sub_f32 = _mm512_sub_ps(a_vec_f32, zero_f32); // float(a) - zero_point
     __m512 c_vec_f32 = _mm512_mul_ps(a_sub_f32, b_vec_f32); // float(a - zero_point) * b
@@ -59,6 +62,38 @@ inline float dot_quant_float_cpu(uint8_t* a, float* b, int sk, int tak, int tbk,
 
 #endif // __AVX2__
 
+template <unsigned int bits>
+inline void quant_pack_float_cpu(float* a, uint8_t* b, int sk, int tak, int tbk, float scale, float zero_point) {
+  constexpr int qFact = 8 / bits;
+  constexpr int pMax = (1 << bits) - 1;
+
+  const int sk_p = sk / qFact;
+  const float pMax_f = (float)pMax;
+
+  float vala_f;
+  uint8_t vala_i;
+  uint8_t valb;
+
+  float* posa = a;
+  uint8_t* posb = b;
+
+  for (int k = 0; k < sk_p; k++) {
+    valb = 0;
+
+    for (int s = 0; s < 8; s += bits) {
+      vala_f = (*posa);
+      vala_f = vala_f / scale + zero_point;
+      vala_f = std::max(0.0f, std::min(vala_f, pMax_f));
+      vala_i = (uint8_t)vala_f;
+      valb |= vala_i << s;
+      posa += tak;
+    }
+
+    (*posb) = valb;
+    posb += tbk;
+  }
+}
+
 Tensor matmul_quant_float_cpu(Tensor a, Tensor b, unsigned int bits, float scale, float zero_point) {
   at::ScalarType typea = a.scalar_type();
   at::ScalarType typeb = b.scalar_type();
@@ -100,10 +135,12 @@ Tensor matmul_quant_float_cpu(Tensor a, Tensor b, unsigned int bits, float scale
             res = dot_quant_float_cpu<8>(posa, posb, sk, tak, tbk, scale, zero_point);
             break;
           }
+          #ifndef __AVX2__
           case 4: {
             res = dot_quant_float_cpu<4>(posa, posb, sk, tak, tbk, scale, zero_point);
             break;
           }
+          #endif // __AVX2__
           default: {
             throw std::runtime_error("Unsupported number of quantization bits");
           }
@@ -129,8 +166,37 @@ Tensor quantize_and_pack_cpu(Tensor a, unsigned int bits, float scale, float zer
   int tan = stridesa[0];
   int tak = stridesa[1];
 
-  int sk_packed = sk / (8 / bits);
-  Tensor b = torch::empty({sn, sk_packed}, torch::device(kCPU).dtype(torch::kUInt8));
+  int sk_p = sk / (8 / bits);
+  int tbm = sk_p;
+  int tbk = 1;
+
+  Tensor b = torch::empty({sn, sk_p}, torch::device(kCPU).dtype(torch::kUInt8));
+
+  float* a_ptr = a.data_ptr<float>();
+  uint8_t* b_ptr = b.data_ptr<uint8_t>();
+
+  at::parallel_for(0, sn, 0, [&](int i0, int i1) {
+    float* posa;
+    uint8_t* posb;
+    for (int i = i0; i < i1; i++) {
+        posa = a_ptr + i * tan;
+        posb = b_ptr + i * tbm;
+
+        switch (bits) {
+          case 8: {
+            quant_pack_float_cpu<8>(posa, posb, sk, tak, tbk, scale, zero_point);
+            break;
+          }
+          case 4: {
+            quant_pack_float_cpu<4>(posa, posb, sk, tak, tbk, scale, zero_point);
+            break;
+          }
+          default: {
+            throw std::runtime_error("Unsupported number of quantization bits");
+          }
+        }
+    }
+  });
 
   return b;
 }

@@ -6,10 +6,10 @@ setup(
     ext_modules=[
         CUDAExtension(
             'matmul_quant',
-            sources=['extension.cpp', 'matmul_quant.cpp', 'matmul_kernels.cu'],
+            sources=['extension.cpp', 'matmul_quant_cpu.cpp', 'matmul_quant_cuda.cu'],
             extra_compile_args={
                 'cxx': ['-fopenmp', '-mavx512f', '-std=c++17'],
-                'nvcc': ['--compiler-bindir=/usr/bin/cuda']
+                'nvcc': ['--compiler-bindir=/home/doug/programs/cuda-gcc/bin']
             },
             extra_link_args=['-lgomp'],
         ),

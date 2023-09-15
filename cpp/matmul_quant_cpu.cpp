@@ -6,11 +6,11 @@ using namespace torch;
 
 #ifdef __AVX2__
 
-// sub-8 quantization is tricky with AVX2
+// sub-8 quantization is tricky with AVX2, but memory pressure is lower on CPU
 
 const int BLOCK_SIZE = 16; // = 128 bit / 8 bit
-template <unsigned int bits>
-inline float dot_quant_float_cpu(uint8_t* a, float* b, int n, int ta, int tb, float scale, float zero_point) {
+
+inline float dot_quant_float_avx2(uint8_t* a, float* b, int n, int ta, int tb, float scale, float zero_point) {
   float sum = 0.0;
   uint8_t* ai = a;
   float* bi = b;
@@ -29,7 +29,7 @@ inline float dot_quant_float_cpu(uint8_t* a, float* b, int n, int ta, int tb, fl
   return scale*sum;
 }
 
-#else // __AVX2__
+#endif // __AVX2__
 
 template <unsigned int bits>
 inline float dot_quant_float_cpu(uint8_t* a, float* b, int sk, int tak, int tbk, float scale, float zero_point) {
@@ -59,8 +59,6 @@ inline float dot_quant_float_cpu(uint8_t* a, float* b, int sk, int tak, int tbk,
 
   return scale*sum;
 }
-
-#endif // __AVX2__
 
 template <unsigned int bits>
 inline void quant_pack_float_cpu(float* a, uint8_t* b, int sk, int tak, int tbk, float scale, float zero_point) {
@@ -94,7 +92,7 @@ inline void quant_pack_float_cpu(float* a, uint8_t* b, int sk, int tak, int tbk,
   }
 }
 
-Tensor matmul_quant_float_cpu(Tensor a, Tensor b, unsigned int bits, float scale, float zero_point) {
+Tensor matmul_quant_cpu(Tensor a, Tensor b, unsigned int bits, float scale, float zero_point) {
   at::ScalarType typea = a.scalar_type();
   at::ScalarType typeb = b.scalar_type();
 
@@ -132,15 +130,17 @@ Tensor matmul_quant_float_cpu(Tensor a, Tensor b, unsigned int bits, float scale
 
         switch (bits) {
           case 8: {
+            #ifdef __AVX2__
+            res = dot_quant_float_avx2(posa, posb, sk, tak, tbk, scale, zero_point);
+            #else // __AVX2__
             res = dot_quant_float_cpu<8>(posa, posb, sk, tak, tbk, scale, zero_point);
+            #endif // __AVX2__
             break;
           }
-          #ifndef __AVX2__
           case 4: {
             res = dot_quant_float_cpu<4>(posa, posb, sk, tak, tbk, scale, zero_point);
             break;
           }
-          #endif // __AVX2__
           default: {
             throw std::runtime_error("Unsupported number of quantization bits");
           }

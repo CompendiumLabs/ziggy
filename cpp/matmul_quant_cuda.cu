@@ -128,7 +128,7 @@ __global__ void quantize_and_pack_half(__half* a, uint8_t* b, int sn, int sk, in
   const __half scale_h = __float2half(scale);
   const __half zero_point_h = __float2half(zero_point);
   const __half zero_h = __float2half(0.0f);
-  const __half pMax_h = (__half)pMax;
+  const __half pMax_h = __int2half_rn(pMax);
 
   int i = blockIdx.x * blockDim.x + threadIdx.x;
 

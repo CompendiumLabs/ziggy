@@ -15,7 +15,7 @@ void test_quantized_cpu() {
   float zero_point = 127.0f;
 
   Tensor qa = quantize_and_pack_cpu(a, bits, scale, zero_point);
-  Tensor c = matmul_quant_float_cpu(qa, b.transpose(0, 1), bits, scale, zero_point);
+  Tensor c = matmul_quant_cpu(qa, b.transpose(0, 1), bits, scale, zero_point);
 
   std::cout << a.sizes() << " | " << a.mean() << std::endl;
   std::cout << b.sizes() << " | " << b.mean() << std::endl;

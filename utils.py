@@ -4,6 +4,7 @@ from typing import Any
 import toml
 import operator
 import asyncio
+import torch
 
 ##
 ## decorators
@@ -23,6 +24,13 @@ def allow_list(func):
 ##
 
 class IndexDict(dict):
+    @classmethod
+    def load(cls, data):
+        return cls(data)
+
+    def save(self):
+        return dict(self)
+
     @allow_list
     def add(self, keys):
         new = set(keys).difference(self)
@@ -68,6 +76,13 @@ class Bundle(dict):
     
     def __setattr__(self, key, value):
         self[key] = value
+
+##
+## torch utils
+##
+
+def resize_alloc(a, size):
+    a.resize_(size, *a.shape[1:])
 
 ##
 ## async rig

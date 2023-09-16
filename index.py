@@ -5,7 +5,8 @@ import torch
 
 from math import ceil, log2
 
-from utils import IndexDict
+from quant import QuantizedEmbedding, Float
+from utils import IndexDict, resize_alloc
 
 ##
 ## Utils
@@ -14,20 +15,13 @@ from utils import IndexDict
 def next_power_of_2(x):
     return pow(2, round(ceil(log2(x))))
 
-def resize_alloc(a, size):
-    a.resize_(size, *a.shape[1:])
-
-def double_alloc(a):
-    resize_alloc(a, 2*a.size(0))
-
 ##
 ## Pure Torch
 ##
 
 class TorchVectorIndex:
     def __init__(
-        self, dims=None, size=1024, load=None, device='cuda', dtype=None,
-        scale=4.0/128, zero_point=0
+        self, dims=None, size=1024, load=None, device='cuda', qspec=Float
     ):
         # set runtime options
         self.device = device
@@ -43,19 +37,8 @@ class TorchVectorIndex:
             # set up storage
             self.labels = []
             self.grpids = IndexDict()
-            self.allocate(
-                size, dims, dtype=dtype, scale=scale, zero_point=zero_point
-            )
-
-    def allocate(self, size, dims, dtype=torch.float32, scale=None, zero_point=None):
-        if dtype == torch.qint8:
-            self.values = torch._empty_affine_quantized(
-                size, dims, device=self.device, dtype=torch.qint8,
-                scale=scale, zero_point=zero_point
-            )
-        else:
-            self.values = torch.empty(size, dims, device=self.device, dtype=dtype)
-        self.groups = torch.empty(size, device=self.device, dtype=torch.int32)
+            self.values = QuantizedEmbedding(size, dims, qspec=qspec)
+            self.groups = torch.empty(size, device=self.device, dtype=torch.int32)
 
     def size(self):
         return len(self.labels)
@@ -63,19 +46,16 @@ class TorchVectorIndex:
     def load(self, path):
         data = torch.load(path) if type(path) is str else path
         self.labels = data['labels']
-        self.grpids = IndexDict(data['grpids'])
-        self.values = data['values']
+        self.grpids = IndexDict.load(data['grpids'])
+        self.values = QuantizedEmbedding.load(data['values'])
         self.groups = data['groups']
 
     def save(self, path=None, compress=True):
-        if compress:
-            self.compress()
-        size = self.size()
         data = {
             'labels': self.labels,
-            'grpids': dict(self.grpids),
-            'values': self.values[:size,:],
-            'groups': self.groups[:size],
+            'grpids': self.grpids.save(),
+            'values': self.values.save(),
+            'groups': self.groups,
         }
         if path is not None:
             torch.save(data, path)
@@ -85,14 +65,8 @@ class TorchVectorIndex:
     def expand(self, size, power=False):
         if power:
             size = next_power_of_2(size)
-        if size > self.values.size(0):
-            resize_alloc(self.values, size)
-            resize_alloc(self.groups, size)
-
-    def compress(self, min_size=1024):
-        size = max(min_size, self.size())
-        if size < self.values.size(0):
-            resize_alloc(self.values, size)
+        if size > self.values.size():
+            self.values.resize(size)
             resize_alloc(self.groups, size)
 
     def add(self, labs, vecs, groups=None, strict=False):
@@ -102,7 +76,7 @@ class TorchVectorIndex:
         # validate input size
         nlabs = len(labs)
         nv, dv = vecs.shape
-        _, d0 = self.values.shape
+        d0 = self.values.dims()
         assert(nv == nlabs)
         assert(dv == d0)
 
@@ -128,7 +102,7 @@ class TorchVectorIndex:
             elocs, idxs = map(list, zip(*[
                 (i, self.labels.index(x)) for i, x in enumerate(labs) if x in exist
             ]))
-            self.values[idxs,:] = vecs[elocs,:]
+            self.values[idxs] = vecs[elocs,:]
             self.groups[idxs] = gids[elocs]
 
         if len(novel) > 0:
@@ -144,16 +118,17 @@ class TorchVectorIndex:
 
             # add in new labels and vectors
             self.labels.extend(xlabs)
-            self.values[nlabels0:nlabels1,:] = vecs[xlocs,:]
+            self.values[nlabels0:nlabels1] = vecs[xlocs,:]
             self.groups[nlabels0:nlabels1] = gids[xlocs]
 
     def remove(self, labs=None, func=None):
+        size = self.size()
         labs = [l for l in self.labels if func(l)] if func is not None else labs
         for lab in set(labs).intersection(self.labels):
             idx = self.labels.index(lab)
             self.labels.pop(idx)
-            self.values[idx,:] = self.values[self.size(),:]
-            self.groups[idx] = self.groups[self.size(),:]
+            self.values.raw[idx] = self.values.raw[size]
+            self.groups[idx] = self.groups[size]
 
     def clear(self):
         self.labels = []
@@ -169,7 +144,7 @@ class TorchVectorIndex:
             raise Exception(f'Some labels not found.')
 
         # return values
-        return self.values[indices,:]
+        return self.values[indices]
 
     def idx(self, indices):
         # convert to tensor if needed
@@ -185,7 +160,7 @@ class TorchVectorIndex:
             raise Exception(f'Some indices out of bounds.')
 
         # return values
-        return self.values[indices,:]
+        return self.values[indices]
 
     def search(self, vecs, k, groups=None, return_simil=True):
         # allow for single vec
@@ -199,17 +174,16 @@ class TorchVectorIndex:
 
         # get compare values
         if groups is None:
+            idx = num
             labs = self.labels
-            vals = self.values[:num,:]
         else:
             ids = torch.tensor(self.grpids.idx(groups), device=self.device, dtype=torch.int32)
             sel = torch.isin(self.groups[:num], ids)
             idx = torch.nonzero(sel).squeeze()
             labs = [self.labels[i] for i in idx]
-            vals = self.values.index_select(0, idx)
 
         # compute similarity matrix
-        sims = similarity(vals, vecs)
+        sims = self.values.similarity(vecs, mask=idx)
 
         # get top results
         tops = sims.topk(k1)

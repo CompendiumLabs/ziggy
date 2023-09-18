@@ -93,6 +93,9 @@ inline void quant_pack_float_cpu(float* a, uint8_t* b, int sk, int tak, int tbk,
 }
 
 Tensor matmul_quant_cpu(Tensor a, Tensor b, unsigned int bits, float scale, float zero_point) {
+  at::Device devicea = a.device();
+  at::Device deviceb = b.device();
+
   at::ScalarType typea = a.scalar_type();
   at::ScalarType typeb = b.scalar_type();
 
@@ -101,6 +104,7 @@ Tensor matmul_quant_cpu(Tensor a, Tensor b, unsigned int bits, float scale, floa
   at::IntArrayRef stridesa = a.strides();
   at::IntArrayRef stridesb = b.strides();
 
+  assert(devicea == deviceb);
   assert(typea == torch::kUInt8);
   assert(typeb == torch::kFloat);
   assert((8 / bits) * sizesa[1] == sizesb[0]);
@@ -142,7 +146,7 @@ Tensor matmul_quant_cpu(Tensor a, Tensor b, unsigned int bits, float scale, floa
             break;
           }
           default: {
-            throw std::runtime_error("Unsupported number of quantization bits");
+            TORCH_CHECK(false, "Unsupported number of quantization bits '", bits, "'");
           }
         }
 
@@ -192,7 +196,7 @@ Tensor quantize_and_pack_cpu(Tensor a, unsigned int bits, float scale, float zer
             break;
           }
           default: {
-            throw std::runtime_error("Unsupported number of quantization bits");
+            TORCH_CHECK(false, "Unsupported number of quantization bits '", bits, "'");
           }
         }
     }

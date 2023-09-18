@@ -63,6 +63,12 @@ class QuantSpec:
         if self.is_quantized and (scale is None or zero_point is None):
             raise ValueError('`scale` and `zero_point` must be specified for quantized embeddings')
 
+    def __repr__(self):
+        if self.is_quantized:
+            return f'{self.qtype.name}(scale={self.scale:.5g}, zero_point={self.zero_point:.5g})'
+        else:
+            return f'{self.qtype.name}'
+
     @classmethod
     def from_width(cls, qtype, zero, width):
         bits = qtype_to_bits(qtype)
@@ -77,44 +83,78 @@ class QuantSpec:
         zero = 0.5*(max+min)
         return cls.from_width(qtype, zero, width)
 
+    @classmethod
+    def load(cls, data):
+        return cls(data['qtype'], scale=data['scale'], zero_point=data['zero_point'])
+
+    def save(self):
+        return {
+            'qtype': self.qtype,
+            'scale': self.scale,
+            'zero_point': self.zero_point,
+        }
+
+    def quantize(self, vec):
+        if self.is_quantized:
+            return matmul_quant.quantize_and_pack(
+                vec, self.bits, self.scale, self.zero_point
+            )
+        else:
+            return vec
+
+    def matmul(self, a, b):
+        if self.is_quantized:
+            return matmul_quant.matmul_quant(
+                a, b, self.bits, self.scale, self.zero_point
+            )
+        else:
+            return a @ b
+
 Half = QuantSpec(QuantType.half)
 Float = QuantSpec(QuantType.float)
 
-class RowAccessor:
+class Accessor:
     def __init__(self, data):
         self.data = data
 
     def __getitem__(self, idx):
-        return self.data[idx,:]
+        return self.data[idx]
 
     def __setitem__(self, idx, vec):
-        self.data[idx,:] = vec
+        self.data[idx] = vec
 
 class QuantizedEmbedding:
-    def __init__(self, size, dims, qspec=Float, device='cuda', data=None):
+    def __init__(self, size, dims, qspec=Float, device='cuda', data=None, qdata=None):
         # set up options
         self.device = device
         self.qspec = qspec
 
         # allocate storage
-        if data is None:
-            self.data = torch.empty(size, dims, device=device, dtype=self.qspec.dtype)
+        if data is not None:
+            self.data = self.quantize(data.to(device=device))
+        elif qdata is not None:
+            self.data = qdata.to(device=device)
         else:
-            self.data = data
+            self.data = torch.empty(size, dims, device=device, dtype=self.qspec.dtype)
 
         # set up raw access
-        self.raw = RowAccessor(self.data)
+        self.raw = Accessor(self.data)
 
     @classmethod
     def load(cls, data):
         size, dims = data['data'].size()
-        return cls(size, dims, qspec=data['qspec'], data=data['data'])
+        qspec = QuantSpec.load(data['qspec'])
+        return cls(size, dims, qspec=qspec, packed_data=data['data'])
 
-    def save(self):
-        return {
-            'qspec': self.qspec,
+    def save(self, path=None):
+        data = {
+            'qspec': self.qspec.save(),
             'data': self.data,
         }
+        if path is not None:
+            torch.save(data, path)
+        else:
+            return data
 
     def size(self):
         return self.data.size(0)
@@ -122,21 +162,20 @@ class QuantizedEmbedding:
     def dims(self):
         return self.data.size(1)
 
+    def __len__(self):
+        return self.size()
+
     def resize(self, size):
         resize_alloc(self.data, size)
 
+    def quantize(self, vec):
+        return self.qspec.quantize(vec)
+
     def __setitem__(self, idx, vec):
-        if self.qspec.is_quantized:
-            if vec.device == 'cpu':
-                qvec = matmul_quant.quantize_and_pack_cpu(vec)
-            elif vec.device == 'cuda':
-                qvec = matmul_quant.quantize_and_pack_cuda(vec)
-        else:
-            qvec = vec
-        self.data[idx,:] = qvec
+        self.data[idx] = self.quantize(vec)
 
     def __getitem__(self, idx):
-        raise NotImplementedError('Need to implement __getitem__')
+        raise NotImplementedError('Need to implement __getitem__ with dequantize')
 
     # here `a` is considered big and immovable
     # transpose pattern is to keep `a` contiguous
@@ -155,16 +194,4 @@ class QuantizedEmbedding:
             raise ValueError(f'Invalid mask type: {type(mask)}')
 
         # break down by quantization and device type
-        if self.is_quantized:
-            if self.device.type == 'cpu':
-                return matmul_quant.matmul_quant_cpu(
-                    data, vecs.float().T, self.qspec.bits,
-                    self.qspec.scale, self.qspec.zero_point
-                ).T
-            elif self.device.type == 'cuda':
-                return matmul_quant.matmul_quant_cuda(
-                    data, vecs.T, self.qspec.bits,
-                    self.qspec.scale, self.qspec.zero_point
-                ).T
-        else:
-            return (data @ vecs.to(dtype=vecs.dtype).T).T
+        return self.qspec.matmul(data, vecs.T).T

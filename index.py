@@ -5,7 +5,7 @@ import torch
 
 from math import ceil, log2
 
-from quant import QuantizedEmbedding, Float
+from quant import QuantizedEmbedding, Float, Half
 from utils import IndexDict, resize_alloc
 
 ##
@@ -31,17 +31,14 @@ class TorchVectorIndex:
             self.load(load)
         else:
             # default datatype
-            if dtype is None:
-                dtype = torch.float16 if device == 'cuda' else torch.float32
+            if qspec is None:
+                qspec = Half if device == 'cuda' else Float
 
             # set up storage
             self.labels = []
             self.grpids = IndexDict()
-            self.values = QuantizedEmbedding(size, dims, qspec=qspec)
+            self.values = QuantizedEmbedding(size, dims, qspec=qspec, device=device)
             self.groups = torch.empty(size, device=self.device, dtype=torch.int32)
-
-    def size(self):
-        return len(self.labels)
 
     def load(self, path):
         data = torch.load(path) if type(path) is str else path
@@ -50,7 +47,7 @@ class TorchVectorIndex:
         self.values = QuantizedEmbedding.load(data['values'])
         self.groups = data['groups']
 
-    def save(self, path=None, compress=True):
+    def save(self, path=None):
         data = {
             'labels': self.labels,
             'grpids': self.grpids.save(),
@@ -61,6 +58,9 @@ class TorchVectorIndex:
             torch.save(data, path)
         else:
             return data
+
+    def size(self):
+        return len(self.labels)
 
     def expand(self, size, power=False):
         if power:

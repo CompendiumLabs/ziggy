@@ -13,6 +13,7 @@ from torch.nn.functional import normalize
 
 from llm import DEFAULT_EMBED, HuggingfaceEmbedding
 from index import TorchVectorIndex
+from quant import Float
 from utils import process
 
 ##
@@ -69,7 +70,8 @@ def batch_generator(gen, batch_size):
 class DocumentDatabase:
     def __init__(
             self, embed=DEFAULT_EMBED, delim='\n{2,}', minlen=1, batch_size=1024,
-            model_device='cuda', index_device='cpu', doc_index=True, dims=None, **kwargs
+            model_device='cuda', index_device='cuda', doc_index=True, dims=None,
+            load=None, qspec=Float, **kwargs
         ):
         # instantiate model and embedding
         self.embed = HuggingfaceEmbedding(embed, device=model_device) if type(embed) is str else embed
@@ -80,9 +82,12 @@ class DocumentDatabase:
         self.batch_size = batch_size
 
         # initalize index
-        self.chunks = {}
-        self.cindex = TorchVectorIndex(self.dims, device=index_device, **kwargs)
-        self.dindex = TorchVectorIndex(self.dims, device=index_device, **kwargs) if doc_index else None
+        if load:
+            self.load(load)
+        else:
+            self.chunks = {}
+            self.cindex = TorchVectorIndex(self.dims, device=index_device, qspec=qspec, **kwargs)
+            self.dindex = TorchVectorIndex(self.dims, device=index_device, qspec=qspec, **kwargs) if doc_index else None
 
     @classmethod
     def from_jsonl(
@@ -101,10 +106,8 @@ class DocumentDatabase:
         process(loader(path), indexer, maxsize=maxsize)
         return self
 
-    @classmethod
-    def from_torch(cls, path, **kwargs):
-        self = cls(**kwargs)
-        data = torch.load(path)
+    def load(self, path):
+        data = torch.load(path) if type(path) is str else path
         self.chunks = data['chunks']
         self.cindex.load(data['cindex'])
         self.dindex.load(data['dindex'])

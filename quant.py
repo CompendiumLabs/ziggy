@@ -131,9 +131,12 @@ class QuantizedEmbedding:
 
         # set up dims
         self.dims = dims
-        qfact = 8 // qspec.bits
-        assert(dims % qfact == 0)
-        qdims = dims // qfact
+        if self.qspec.is_quantized:
+            qfact = 8 // qspec.bits
+            assert(dims % qfact == 0)
+            qdims = dims // qfact
+        else:
+            qdims = dims
 
         # allocate storage
         if data is not None:
@@ -191,7 +194,7 @@ class QuantizedEmbedding:
             data = self.data
         elif type(mask) is int:
             data = self.data[:mask]
-        elif type(mask) is torch.Tensor and mask.dtype == torch.bool:
+        elif type(mask) is torch.Tensor:
             data = self.data.index_select(0, mask)
         else:
             raise ValueError(f'Invalid mask type: {type(mask)}')

@@ -76,7 +76,7 @@ class TorchVectorIndex:
         # validate input size
         nlabs = len(labs)
         nv, dv = vecs.shape
-        d0 = self.values.dims()
+        d0 = self.values.dims
         assert(nv == nlabs)
         assert(dv == d0)
 

@@ -129,13 +129,19 @@ class QuantizedEmbedding:
         self.device = device
         self.qspec = qspec
 
+        # set up dims
+        self.dims = dims
+        qfact = 8 // qspec.bits
+        assert(dims % qfact == 0)
+        qdims = dims // qfact
+
         # allocate storage
         if data is not None:
             self.data = self.quantize(data.to(device=device))
         elif qdata is not None:
             self.data = qdata.to(device=device)
         else:
-            self.data = torch.empty(size, dims, device=device, dtype=self.qspec.dtype)
+            self.data = torch.empty(size, qdims, device=device, dtype=self.qspec.dtype)
 
         # set up raw access
         self.raw = Accessor(self.data)
@@ -158,9 +164,6 @@ class QuantizedEmbedding:
 
     def size(self):
         return self.data.size(0)
-
-    def dims(self):
-        return self.data.size(1)
 
     def __len__(self):
         return self.size()

@@ -103,26 +103,57 @@ async def loader_func(queue, stream):
         await queue.put(batch)
 
 # process queue items
-async def worker_func(queue, func):
+async def worker_func(queue_prev, queue_next, func):
+    while True:
+        data = await queue_prev.get()
+        await queue_next.put(func(data))
+        queue_prev.task_done()
+
+async def counter_func(queue, total):
     while True:
         data = await queue.get()
-        func(data)
+        total[0] += 1
         queue.task_done()
 
 # asnychronous indexer
-async def process_async(stream, func, maxsize=0):
+async def pipeline_func(stream, *funcs, maxsize=0):
+    # handle multiple workers
+    funcs = [(f, 1) if type(f) is not tuple else f for f in funcs]
+
     # create queue
-    queue = asyncio.Queue(maxsize=maxsize)
+    queue_load = asyncio.Queue(maxsize=maxsize)
+    queue_work = [asyncio.Queue(maxsize=maxsize) for _ in funcs]
+
+    # initialize loader
+    loader = asyncio.create_task(loader_func(queue_load, stream))
+    queue_prev = queue_load
 
     # hook up queue
-    loader = asyncio.create_task(loader_func(queue, stream))
-    worker = asyncio.create_task(worker_func(queue, func))
+    workers = []
+    for (func, num), queue_next in zip(funcs, queue_work):
+        tasks = [
+            asyncio.create_task(worker_func(queue_prev, queue_next, func)) for _ in range(num)
+        ]
+        workers += tasks
+        queue_prev = queue_next
+
+    # initialize counter
+    total = [0]
+    counter = asyncio.create_task(counter_func(queue_next, total))
 
     # wait for load to finish
     await loader
 
     # finish remaining tasks
-    await queue.join()
+    await asyncio.gather(*[q.join() for q in queue_work])
 
-def process(stream, func, **kwargs):
-    asyncio.run(process_async(stream, func, **kwargs))
+    # cancel workers
+    for worker in workers:
+        worker.cancel()
+    counter.cancel()
+
+    # get results
+    return total[0]
+
+def pipeline_async(stream, *funcs, **kwargs):
+    return asyncio.run(pipeline_func(stream, *funcs, **kwargs))

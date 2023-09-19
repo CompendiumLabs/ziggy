@@ -14,7 +14,7 @@ from torch.nn.functional import normalize
 from llm import DEFAULT_EMBED, HuggingfaceEmbedding
 from index import TorchVectorIndex
 from quant import Float
-from utils import process, batch_generator, l2_mean
+from utils import batch_generator, l2_mean
 
 ##
 ## Utils
@@ -90,15 +90,13 @@ class DocumentDatabase:
         progress=True, maxsize=10, **kwargs
     ):
         self = cls(**kwargs)
-        def loader(path):
-            lines = stream_jsonl(path, maxrows=maxrows)
-            for batch in batch_generator(lines, doc_batch):
-                yield [(row[name_col], row[text_col]) for row in batch]
-        def indexer(data):
-            self.index_docs(data)
+        lines = stream_jsonl(path, maxrows=maxrows)
+        for batch in batch_generator(lines, doc_batch):
+            self.index_docs([
+                (row[name_col], row[text_col]) for row in batch
+            ])
             if progress:
                 print('█', end='', flush=True)
-        process(loader(path), indexer, maxsize=maxsize)
         return self
 
     def load(self, path):
@@ -122,13 +120,14 @@ class DocumentDatabase:
         else:
             torch.save(data, path)
 
-    # async rig this into splitting and embedding?
-    def index_docs(self, texts):
+    def process_docs(self, texts):
         # split into chunks dict
         targ = texts.items() if type(texts) is dict else texts
         chunks = {k: self.splitter(v) for k, v in targ}
         chunks = {k: v for k, v in chunks.items() if len(v) > 0}
+        return chunks
 
+    def index_chunks(self, chunks):
         # get names and labels
         names = list(chunks)
         labels = [(n, j) for n, c in chunks.items() for j in range(len(c))]
@@ -155,6 +154,10 @@ class DocumentDatabase:
                 l2_mean(embeds[i:j,:], dim=0) for i, j in cumul_indices(chunk_sizes)
             ], dim=0))
             self.dindex.add(names, docemb)
+
+    def index_docs(self, texts):
+        chunks = self.process_docs(texts)
+        self.index_chunks(chunks)
 
     def search(self, query, kd=25, kc=10, cutoff=-torch.inf):
         # embed query string

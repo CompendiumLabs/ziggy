@@ -2,6 +2,7 @@
 
 from math import ceil
 from itertools import chain, islice
+import os
 import torch
 import torch.nn.functional as F
 
@@ -242,30 +243,37 @@ class HuggingfaceEmbeddingONNX:
     def __init__(self, model_id=f'sentence-transformers/{DEFAULT_EMBED}', save_path='testing/onnx', device='cuda'):
         self.device = device
 
-        # initial load
-        self.tokenizer = AutoTokenizer.from_pretrained(model_id)
-        self.model = ORTModelForFeatureExtraction.from_pretrained(model_id, export=True)
+        if not os.path.isdir(save_path):
+            # initial load
+            self.tokenizer = AutoTokenizer.from_pretrained(model_id)
+            self.model = ORTModelForFeatureExtraction.from_pretrained(model_id, export=True)
 
-        self.optimization_config = OptimizationConfig(
-            optimization_level=99, optimize_for_gpu=True, fp16=True,
-        )
-        optimizer = ORTOptimizer.from_pretrained(self.model)
-
-        # Export the optimized model
-        optimizer.optimize(save_dir=save_path, optimization_config=self.optimization_config)
+            # optimizate model
+            self.optimization_config = OptimizationConfig(
+                optimization_level=99, optimize_for_gpu=True, fp16=True
+            )
+            optimizer = ORTOptimizer.from_pretrained(self.model)
+            optimizer.optimize(save_dir=save_path, optimization_config=self.optimization_config)
 
         # load optimized
         self.tokenizer = AutoTokenizer.from_pretrained(save_path)
         self.model = ORTModelForFeatureExtraction.from_pretrained(save_path).to(device)
 
-    def embed_batch(self, text, normalize=True, **kwargs):
+    def tokenize_batch(self, text, **kwargs):
         targs = {'padding': True, 'truncation': True, **kwargs}
         encode = self.tokenizer(text, return_tensors='pt', **targs)
+        return encode['input_ids'], encode['attention_mask']
 
-        input_ids = encode['input_ids'].to(self.device)
-        attention_mask = encode['attention_mask'].to(self.device)
-        token_type_ids = torch.zeros(encode['input_ids'].shape, dtype=torch.int64, device=self.device)
-        output = self.model(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)
+    def forward_batch(self, input_ids, attention_mask):
+        # prepare model inputs on device
+        input_ids = input_ids.to(self.device)
+        attention_mask = attention_mask.to(self.device)
+        token_type_ids = torch.zeros(input_ids.shape, dtype=torch.int64, device=self.device)
+
+        # get model output
+        output = self.model(
+            input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids
+        )
 
         # get masked embedding
         state = output[0]
@@ -274,6 +282,10 @@ class HuggingfaceEmbeddingONNX:
 
         # return normalized embedding
         return F.normalize(embed, dim=-1)
+
+    def embed_batch(self, text, normalize=True, **kwargs):
+        input_ids, attention_mask = self.tokenize_batch(text, **kwargs)
+        return self.forward_batch(input_ids, attention_mask)
 
     def embed(self, text, maxlen=512, batch_size=128):
         # handle unit case

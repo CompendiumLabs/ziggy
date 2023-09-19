@@ -1,15 +1,16 @@
 # general utilities
 
 from typing import Any
+from itertools import islice
 import toml
 import operator
 import asyncio
-import torch
 
 ##
-## decorators
+## pure play python
 ##
 
+# allow list or single item
 def allow_list(func):
     def wrapper(self, keys):
         many = type(keys) is list
@@ -18,6 +19,11 @@ def allow_list(func):
         if rets is not None:
             return rets if many else rets[0]
     return wrapper
+
+# generate (resolved) batches from generator
+def batch_generator(gen, batch_size):
+    while (batch := list(islice(gen, batch_size))) != []:
+        yield batch
 
 ##
 ## collections
@@ -83,6 +89,9 @@ class Bundle(dict):
 
 def resize_alloc(a, size):
     a.resize_(size, *a.shape[1:])
+
+def l2_mean(a, dim=0):
+    return a.square().mean(dim=dim).sqrt()
 
 ##
 ## async rig

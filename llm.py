@@ -1,13 +1,15 @@
 ## LLM generation and embeddings
 
 from math import ceil
-from itertools import chain
+from itertools import chain, islice
 import torch
 import torch.nn.functional as F
 
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
 from sentence_transformers import SentenceTransformer
 from llama_cpp import Llama
+
+from utils import l2_mean
 
 ##
 ## Constants
@@ -201,7 +203,7 @@ class LlamaCppModel:
 
 class HuggingfaceEmbedding:
     def __init__(self, model=DEFAULT_EMBED, device='cuda', **kwargs):
-        self.model = SentenceTransformer(model, device=device, **kwargs)
+        self.model = SentenceTransformer(model, **kwargs).to(device)
         self.maxlen = self.model.get_max_seq_length()
         self.dims = self.model.get_sentence_embedding_dimension()
 
@@ -221,8 +223,77 @@ class HuggingfaceEmbedding:
         bounds = cumul_bounds([len(c) for c in chunks])
 
         # embed chunks and average
-        vecs = self.model.encode(list(chain(*chunks)), **args)
-        means = torch.stack([vecs[i:j,:].mean(0) for i, j in bounds])
+        with torch.no_grad():
+            vecs = self.model.encode(list(chain(*chunks)), **args)
+        means = torch.stack([l2_mean(vecs[i:j,:], dim=0) for i, j in bounds])
 
         # return normalized vectors
         return means
+
+##
+## ONNX
+##
+
+from optimum.onnxruntime import ORTModelForFeatureExtraction, ORTOptimizer
+from optimum.onnxruntime.configuration import OptimizationConfig
+
+# this gets a 60% speedup on GPU!!!
+class HuggingfaceEmbeddingONNX:
+    def __init__(self, model_id=f'sentence-transformers/{DEFAULT_EMBED}', save_path='testing/onnx', device='cuda'):
+        self.device = device
+
+        # initial load
+        self.tokenizer = AutoTokenizer.from_pretrained(model_id)
+        self.model = ORTModelForFeatureExtraction.from_pretrained(model_id, export=True)
+
+        self.optimization_config = OptimizationConfig(
+            optimization_level=99, optimize_for_gpu=True, fp16=True,
+        )
+        optimizer = ORTOptimizer.from_pretrained(self.model)
+
+        # Export the optimized model
+        optimizer.optimize(save_dir=save_path, optimization_config=self.optimization_config)
+
+        # load optimized
+        self.tokenizer = AutoTokenizer.from_pretrained(save_path)
+        self.model = ORTModelForFeatureExtraction.from_pretrained(save_path).to(device)
+
+    def embed_batch(self, text, normalize=True, **kwargs):
+        targs = {'padding': True, 'truncation': True, **kwargs}
+        encode = self.tokenizer(text, return_tensors='pt', **targs)
+
+        input_ids = encode['input_ids'].to(self.device)
+        attention_mask = encode['attention_mask'].to(self.device)
+        token_type_ids = torch.zeros(encode['input_ids'].shape, dtype=torch.int64, device=self.device)
+        output = self.model(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)
+
+        # get masked embedding
+        state = output[0]
+        mask = attention_mask.float().unsqueeze(-1)
+        embed = (state*mask).sum(1)/mask.sum(1)
+
+        # return normalized embedding
+        return F.normalize(embed, dim=-1)
+
+    def embed(self, text, maxlen=512, batch_size=128):
+        # handle unit case
+        if type(text) is str:
+            text = [text]
+
+        # split into chunks and embed
+        chunks = [length_splitter(t, maxlen) for t in text]
+        bounds = cumul_bounds([len(c) for c in chunks])
+        chunk_iter = chain(*chunks)
+
+        # assess chunk information
+        nchunks = sum([len(c) for c in chunks])
+        nbatch = int(ceil(nchunks/batch_size))
+
+        # embed chunks and average
+        embed = torch.cat([
+            self.embed_batch(list(islice(chunk_iter, batch_size))) for i in range(nbatch)
+        ], dim=0)
+        means = torch.stack([l2_mean(embed[i:j,:], dim=0) for i, j in bounds])
+
+        # return normalized vectors
+        return F.normalize(means, dim=-1)

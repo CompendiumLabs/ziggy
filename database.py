@@ -14,7 +14,7 @@ from torch.nn.functional import normalize
 from llm import DEFAULT_EMBED, HuggingfaceEmbedding
 from index import TorchVectorIndex
 from quant import Float
-from utils import process
+from utils import process, batch_generator, l2_mean
 
 ##
 ## Utils
@@ -58,11 +58,6 @@ def stream_jsonl(path, maxrows=None):
             if maxrows is not None and i >= maxrows:
                 break
             yield json.loads(line)
-
-# generate (resolved) batches from generator
-def batch_generator(gen, batch_size):
-    while (batch := list(islice(gen, batch_size))) != []:
-        yield batch
 
 # data storage:
 # chunks: dict {name: [chunk1, chunk2, ...]}
@@ -127,6 +122,7 @@ class DocumentDatabase:
         else:
             torch.save(data, path)
 
+    # async rig this into splitting and embedding?
     def index_docs(self, texts):
         # split into chunks dict
         targ = texts.items() if type(texts) is dict else texts
@@ -156,7 +152,7 @@ class DocumentDatabase:
         # make document level embeddings
         if self.dindex is not None:
             docemb = normalize(torch.stack([
-                embeds[i:j,:].mean(0) for i, j in cumul_indices(chunk_sizes)
+                l2_mean(embeds[i:j,:], dim=0) for i, j in cumul_indices(chunk_sizes)
             ], dim=0))
             self.dindex.add(names, docemb)
 

@@ -3,17 +3,8 @@
 import faiss
 import torch
 
-from math import ceil, log2
-
 from quant import QuantizedEmbedding, Float, Half
-from utils import IndexDict, resize_alloc
-
-##
-## Utils
-##
-
-def next_power_of_2(x):
-    return pow(2, round(ceil(log2(x))))
+from utils import IndexDict, resize_alloc, next_power_of_2
 
 ##
 ## Pure Torch

@@ -6,15 +6,14 @@ import json
 import torch
 
 from math import ceil, inf
-from operator import itemgetter
-from itertools import chain, groupby, islice, accumulate
+from itertools import chain, islice
 from pathlib import Path
 from torch.nn.functional import normalize
 
 from llm import DEFAULT_EMBED, HuggingfaceEmbedding
 from index import TorchVectorIndex
 from quant import Float
-from utils import batch_generator, l2_mean
+from utils import batch_generator, l2_mean, cumul_indices, groupby_dict
 
 ##
 ## Utils
@@ -25,31 +24,10 @@ def paragraph_splitter(text, delim='\n{2,}', minlen=1):
     paras = [para.strip() for para in re.split(delim, text)]
     return [para for para in paras if len(para) >= minlen]
 
-# group tuples by `idx` element, preserving other orders
-def groupby_dict(tups, idx=0):
-    getter = itemgetter(idx)
-    tups = sorted(tups, key=getter)
-    return {
-        i: [k for _, k in j] for i, j in groupby(tups, key=getter)
-    }
-
 # robust text reader (for encoding errors)
 def robust_read(path):
     with open(path, 'r', errors='ignore') as fid:
         return fid.read()
-
-# get batch indices
-def batch_indices(length, batch_size):
-    return [(i, min(i+batch_size, length)) for i in range(0, length, batch_size)]
-
-# cumulative sum
-def cumsum(lengths):
-    return list(chain([0], accumulate(lengths)))
-
-# get cumulative indices
-def cumul_indices(lengths):
-    sums = cumsum(lengths)
-    return [(i, j) for i, j in zip(sums[:-1], sums[1:])]
 
 # generate loader for jsonl file
 def stream_jsonl(path, maxrows=None):
@@ -141,7 +119,7 @@ class DocumentDatabase:
         # embed chunks with chosen batch_size
         chunk_iter = chain(*chunks.values())
         embeds = torch.cat([
-            self.embed.embed_async(list(islice(chunk_iter, self.batch_size))) for i in range(nbatch)
+            self.embed.embed(list(islice(chunk_iter, self.batch_size))) for i in range(nbatch)
         ], dim=0)
 
         # update chunks and add to index

@@ -1,7 +1,7 @@
 ## LLM generation and embeddings
 
 from math import ceil
-from itertools import chain, islice
+from itertools import chain
 import os
 import torch
 import torch.nn.functional as F
@@ -10,7 +10,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
 from sentence_transformers import SentenceTransformer
 from llama_cpp import Llama
 
-from utils import l2_mean, pipeline_async
+from utils import l2_mean, pipeline_threads, batch_generator, cumul_bounds, sprint
 
 ##
 ## Constants
@@ -32,17 +32,6 @@ DEFAULT_SYSTEM_PROMPT = "You are a helpful and honest assistant. Always answer i
 # generate a llama query
 def llama_chat(query, system_prompt):
     return f'{B_INST} {B_SYS}\n{system_prompt}\n{E_SYS}\n\n{query} {E_INST}'
-
-# printer for streaming
-def sprint(s):
-    print(s, end='', flush=True)
-
-# cumsum generator
-def cumul_bounds(seq):
-    total = 0
-    for item in seq:
-        yield total, total+item
-        total += item
 
 # sampler for manual generation
 def sample(logits, top_k=None, temp=1.0):
@@ -283,7 +272,7 @@ class HuggingfaceEmbeddingONNX:
         # return normalized embedding
         return F.normalize(embed, dim=-1)
 
-    def embed_batch(self, text, normalize=True, **kwargs):
+    def embed_batch(self, text, **kwargs):
         input_ids, attention_mask = self.tokenize_batch(text, **kwargs)
         return self.forward_batch(input_ids, attention_mask)
 
@@ -295,49 +284,18 @@ class HuggingfaceEmbeddingONNX:
         # split into chunks and embed
         chunks = [length_splitter(t, maxlen) for t in text]
         bounds = cumul_bounds([len(c) for c in chunks])
-        chunk_iter = chain(*chunks)
-
-        # assess chunk information
-        nchunks = sum([len(c) for c in chunks])
-        nbatch = int(ceil(nchunks/batch_size))
-
-        # embed chunks and average
-        embed = torch.cat([
-            self.embed_batch(list(islice(chunk_iter, batch_size))) for i in range(nbatch)
-        ], dim=0)
-        means = torch.stack([l2_mean(embed[i:j,:], dim=0) for i, j in bounds])
-
-        # return normalized vectors
-        return F.normalize(means, dim=-1)
-
-    def embed_async(self, text, maxlen=512, batch_size=128):
-        # handle unit case
-        if type(text) is str:
-            text = [text]
-
-        # split into chunks and embed
-        chunks = [length_splitter(t, maxlen) for t in text]
-        bounds = cumul_bounds([len(c) for c in chunks])
-
-        # assess chunk information
-        nchunks = sum([len(c) for c in chunks])
-        nbatch = int(ceil(nchunks/batch_size))
 
         # make workers
         results = []
         def loader():
-            chunk_iter = chain(*chunks)
-            for i in range(nbatch):
-                yield list(islice(chunk_iter, batch_size))
+            yield from batch_generator(chain(*chunks), batch_size)
         def tokenizer(texts):
             return self.tokenize_batch(texts)
         def forwarder(data):
-            return self.forward_batch(*data)
-        def storer(data):
-            results.append(data)
+            results.append(self.forward_batch(*data))
 
         # embed chunks and average
-        pipeline_async(loader(), (tokenizer, 1), forwarder, storer, maxsize=10)
+        pipeline_threads(loader(), tokenizer, forwarder, maxsize=256)
         embed = torch.cat(results, dim=0)
         means = torch.stack([l2_mean(embed[i:j,:], dim=0) for i, j in bounds])
 

@@ -10,7 +10,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
 from sentence_transformers import SentenceTransformer
 from llama_cpp import Llama
 
-from utils import l2_mean
+from utils import l2_mean, pipeline_async
 
 ##
 ## Constants
@@ -305,6 +305,40 @@ class HuggingfaceEmbeddingONNX:
         embed = torch.cat([
             self.embed_batch(list(islice(chunk_iter, batch_size))) for i in range(nbatch)
         ], dim=0)
+        means = torch.stack([l2_mean(embed[i:j,:], dim=0) for i, j in bounds])
+
+        # return normalized vectors
+        return F.normalize(means, dim=-1)
+
+    def embed_async(self, text, maxlen=512, batch_size=128):
+        # handle unit case
+        if type(text) is str:
+            text = [text]
+
+        # split into chunks and embed
+        chunks = [length_splitter(t, maxlen) for t in text]
+        bounds = cumul_bounds([len(c) for c in chunks])
+
+        # assess chunk information
+        nchunks = sum([len(c) for c in chunks])
+        nbatch = int(ceil(nchunks/batch_size))
+
+        # make workers
+        results = []
+        def loader():
+            chunk_iter = chain(*chunks)
+            for i in range(nbatch):
+                yield list(islice(chunk_iter, batch_size))
+        def tokenizer(texts):
+            return self.tokenize_batch(texts)
+        def forwarder(data):
+            return self.forward_batch(*data)
+        def storer(data):
+            results.append(data)
+
+        # embed chunks and average
+        pipeline_async(loader(), (tokenizer, 1), forwarder, storer, maxsize=10)
+        embed = torch.cat(results, dim=0)
         means = torch.stack([l2_mean(embed[i:j,:], dim=0) for i, j in bounds])
 
         # return normalized vectors

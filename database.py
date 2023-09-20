@@ -141,7 +141,7 @@ class DocumentDatabase:
         # embed chunks with chosen batch_size
         chunk_iter = chain(*chunks.values())
         embeds = torch.cat([
-            self.embed.embed(list(islice(chunk_iter, self.batch_size))) for i in range(nbatch)
+            self.embed.embed_async(list(islice(chunk_iter, self.batch_size))) for i in range(nbatch)
         ], dim=0)
 
         # update chunks and add to index

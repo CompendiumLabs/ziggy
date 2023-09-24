@@ -191,62 +191,50 @@ class LlamaCppModel:
 ## Embeddings
 ##
 
+try:
+    from optimum.onnxruntime import ORTModelForFeatureExtraction, ORTOptimizer
+    from optimum.onnxruntime.configuration import OptimizationConfig
+except:
+    print('ONNX not available.')
+
 class HuggingfaceEmbedding:
-    def __init__(self, model=DEFAULT_EMBED, device='cuda', **kwargs):
-        self.model = SentenceTransformer(model, **kwargs).to(device)
-        self.maxlen = self.model.get_max_seq_length()
-        self.dims = self.model.get_sentence_embedding_dimension()
-
-    def embed(self, text, **kwargs):
-        # handle default args
-        args = dict(
-            convert_to_numpy=False, convert_to_tensor=True,
-            normalize_embeddings=True, **kwargs
-        )
-
-        # handle unit case
-        if type(text) is str:
-            text = [text]
-
-        # split into chunks and embed
-        chunks = [length_splitter(t, self.maxlen) for t in text]
-        bounds = cumul_bounds([len(c) for c in chunks])
-
-        # embed chunks and average
-        with torch.no_grad():
-            vecs = self.model.encode(list(chain(*chunks)), **args)
-        means = torch.stack([vecs[i:j,:].mean(dim=0) for i, j in bounds])
-
-        # return normalized vectors
-        return means
-
-##
-## ONNX
-##
-
-from optimum.onnxruntime import ORTModelForFeatureExtraction, ORTOptimizer
-from optimum.onnxruntime.configuration import OptimizationConfig
-
-# this gets a 60% speedup on GPU!!!
-class HuggingfaceEmbeddingONNX:
-    def __init__(self, model_id=f'sentence-transformers/{DEFAULT_EMBED}', save_path='testing/onnx', device='cuda'):
+    def __init__(self, model_id=DEFAULT_EMBED, save_dir='onnx', device='cuda', onnx=False, compile=False):
+        # runtime options
         self.device = device
+        transformer_path = f'sentence-transformers/{model_id}'
 
-        if not os.path.isdir(save_path):
-            # initial load
-            self.tokenizer = AutoTokenizer.from_pretrained(model_id)
-            self.model = ORTModelForFeatureExtraction.from_pretrained(model_id, export=True)
+        # load params
+        if onnx:
+            ModelConstructor = ORTModelForFeatureExtraction.from_pretrained
+            model_path = os.path.join(save_dir, model_id)
+        else:
+            ModelConstructor = SentenceTransformer
+            model_path = model_id
 
-            # optimizate model
-            self.optimization_config = OptimizationConfig(
+        # compile if needed
+        if onnx and (compile or not os.path.isdir(model_id)):
+            model = ORTModelForFeatureExtraction.from_pretrained(
+                transformer_path, export=True
+            )
+            optimization_config = OptimizationConfig(
                 optimization_level=99, optimize_for_gpu=True, fp16=True
             )
-            optimizer = ORTOptimizer.from_pretrained(self.model)
-            optimizer.optimize(save_dir=save_path, optimization_config=self.optimization_config)
+            optimizer = ORTOptimizer.from_pretrained(model)
+            optimizer.optimize(
+                save_dir=model_path, optimization_config=optimization_config
+            )
 
-        # load optimized
-        self.tokenizer = AutoTokenizer.from_pretrained(save_path)
-        self.model = ORTModelForFeatureExtraction.from_pretrained(save_path).to(device)
+        # load model
+        self.tokenizer = AutoTokenizer.from_pretrained(transformer_path)
+        self.model = ModelConstructor(model_path).to(device)
+
+        # get model info
+        if onnx:
+            self.maxlen = self.model.config.max_position_embeddings
+            self.dims = self.model.config.hidden_size
+        else:
+            self.maxlen = self.model.get_max_seq_length()
+            self.dims = self.model.get_sentence_embedding_dimension()
 
     def tokenize_batch(self, text, **kwargs):
         targs = {'padding': True, 'truncation': True, **kwargs}
@@ -276,12 +264,13 @@ class HuggingfaceEmbeddingONNX:
         input_ids, attention_mask = self.tokenize_batch(text, **kwargs)
         return self.forward_batch(input_ids, attention_mask)
 
-    def embed(self, text, maxlen=512, batch_size=128):
+    def embed(self, text, maxlen=None, batch_size=128):
         # handle unit case
         if type(text) is str:
             text = [text]
 
         # split into chunks and embed
+        maxlen = maxlen if maxlen is not None else self.maxlen
         chunks = [length_splitter(t, maxlen) for t in text]
         bounds = cumul_bounds([len(c) for c in chunks])
 
@@ -297,7 +286,9 @@ class HuggingfaceEmbeddingONNX:
         # embed chunks and average
         pipeline_threads(loader(), tokenizer, forwarder, maxsize=256)
         embed = torch.cat(results, dim=0) # combine batches
-        means = torch.stack([embed[i:j,:].mean(dim=0) for i, j in bounds], dim=0)
+        means = normalize(torch.stack([
+            embed[i:j,:].mean(dim=0) for i, j in bounds
+        ], dim=0), dim=-1)
 
         # return normalized vectors
-        return normalize(means, dim=-1)
+        return means

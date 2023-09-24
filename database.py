@@ -43,12 +43,11 @@ def stream_jsonl(path, maxrows=None):
 class DocumentDatabase:
     def __init__(
             self, embed=DEFAULT_EMBED, delim='\n{2,}', minlen=1, batch_size=1024,
-            model_device='cuda', index_device='cuda', doc_index=True, dims=None,
-            allocate=True, qspec=Float, **kwargs
+            model_device='cuda', index_device='cuda', doc_index=True, allocate=True,
+            qspec=Float, **kwargs
         ):
         # instantiate model and embedding
         self.embed = HuggingfaceEmbedding(embed, device=model_device) if type(embed) is str else embed
-        self.dims = dims if dims is not None else self.embed.dims
 
         # set up options
         self.splitter = lambda s: paragraph_splitter(s, delim=delim, minlen=minlen)
@@ -57,8 +56,8 @@ class DocumentDatabase:
         # initalize index
         if allocate:
             self.chunks = {}
-            self.cindex = TorchVectorIndex(self.dims, device=index_device, qspec=qspec, **kwargs)
-            self.dindex = TorchVectorIndex(self.dims, device=index_device, qspec=qspec, **kwargs) if doc_index else None
+            self.cindex = TorchVectorIndex(self.embed.dims, device=index_device, qspec=qspec, **kwargs)
+            self.dindex = TorchVectorIndex(self.embed.dims, device=index_device, qspec=qspec, **kwargs) if doc_index else None
 
     @classmethod
     def from_jsonl(
@@ -128,7 +127,7 @@ class DocumentDatabase:
         if self.dindex is not None:
             docemb = normalize(torch.stack([
                 embeds[i:j,:].mean(dim=0) for i, j in cumul_indices(chunk_sizes)
-            ], dim=0))
+            ], dim=0), dim=-1)
             self.dindex.add(names, docemb)
 
     def index_docs(self, texts):

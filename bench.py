@@ -1,6 +1,6 @@
 import torch
-import torch.nn.functional as F
 from itertools import chain
+from torch.nn.functional import normalize
 
 from transformers import AutoTokenizer
 from optimum.onnxruntime import ORTModelForFeatureExtraction, ORTOptimizer
@@ -48,4 +48,4 @@ class ONNXModel:
         model_inputs = self.encode(inputs)
         model_outputs = self.model(**model_inputs)
         embeddings = mean_pooling(model_outputs, model_inputs['attention_mask'].to(self.device))
-        return F.normalize(embeddings, p=2, dim=1)
+        return normalize(embeddings, p=2, dim=1)

@@ -4,6 +4,7 @@ screenlog.*
 
 testing
 store
+onnx
 
 cpp/build
 cpp/libtorch_cpu

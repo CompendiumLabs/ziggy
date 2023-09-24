@@ -200,6 +200,14 @@ Tensor matmul_quant_cuda(Tensor a, Tensor b, unsigned int bits, float scale, flo
           matmul_quant_half_kernel<4><<<blocks, threads>>>(a_ptr, b_ptr, c_ptr, sn, sm, sk, tan, tak, tbk, tbm, scale, zero_point);
           break;
         }
+        case 2: {
+          matmul_quant_half_kernel<2><<<blocks, threads>>>(a_ptr, b_ptr, c_ptr, sn, sm, sk, tan, tak, tbk, tbm, scale, zero_point);
+          break;
+        }
+        case 1: {
+          matmul_quant_half_kernel<1><<<blocks, threads>>>(a_ptr, b_ptr, c_ptr, sn, sm, sk, tan, tak, tbk, tbm, scale, zero_point);
+          break;
+        }
         default: {
           TORCH_CHECK(false, "Unsupported number of quantization bits '", bits, "'");
         }
@@ -220,6 +228,14 @@ Tensor matmul_quant_cuda(Tensor a, Tensor b, unsigned int bits, float scale, flo
         }
         case 4: {
           matmul_quant_float_kernel<4><<<blocks, threads>>>(a_ptr, b_ptr, c_ptr, sn, sm, sk, tan, tak, tbk, tbm, scale, zero_point);
+          break;
+        }
+        case 2: {
+          matmul_quant_float_kernel<2><<<blocks, threads>>>(a_ptr, b_ptr, c_ptr, sn, sm, sk, tan, tak, tbk, tbm, scale, zero_point);
+          break;
+        }
+        case 1: {
+          matmul_quant_float_kernel<1><<<blocks, threads>>>(a_ptr, b_ptr, c_ptr, sn, sm, sk, tan, tak, tbk, tbm, scale, zero_point);
           break;
         }
         default: {
@@ -260,14 +276,25 @@ Tensor quantize_and_pack_cuda(Tensor a, unsigned int bits, float scale, float ze
       uint8_t* b_ptr = b.data_ptr<uint8_t>();
 
       switch (bits) {
-        case 8:
+        case 8: {
           quantize_and_pack_float<8><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, tan, tak, scale, zero_point);
           break;
-        case 4:
+        }
+        case 4: {
           quantize_and_pack_float<4><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, tan, tak, scale, zero_point);
           break;
-        default:
+        }
+        case 2: {
+          quantize_and_pack_float<2><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, tan, tak, scale, zero_point);
+          break;
+        }
+        case 1: {
+          quantize_and_pack_float<1><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, tan, tak, scale, zero_point);
+          break;
+        }
+        default: {
           TORCH_CHECK(false, "Unsupported number of quantization bits '", bits, "'");
+        }
       }
 
       break;
@@ -277,14 +304,25 @@ Tensor quantize_and_pack_cuda(Tensor a, unsigned int bits, float scale, float ze
       uint8_t* b_ptr = b.data_ptr<uint8_t>();
 
       switch (bits) {
-        case 8:
+        case 8: {
           quantize_and_pack_half<8><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, tan, tak, scale, zero_point);
           break;
-        case 4:
+        }
+        case 4: {
           quantize_and_pack_half<4><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, tan, tak, scale, zero_point);
           break;
-        default:
+        }
+        case 2: {
+          quantize_and_pack_half<2><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, tan, tak, scale, zero_point);
+          break;
+        }
+        case 1: {
+          quantize_and_pack_half<1><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, tan, tak, scale, zero_point);
+          break;
+        }
+        default: {
           TORCH_CHECK(false, "Unsupported number of quantization bits '", bits, "'");
+        }
       }
 
       break;

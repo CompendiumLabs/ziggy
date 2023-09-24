@@ -145,6 +145,14 @@ Tensor matmul_quant_cpu(Tensor a, Tensor b, unsigned int bits, float scale, floa
             res = dot_quant_float_cpu<4>(posa, posb, sk, tak, tbk, scale, zero_point);
             break;
           }
+          case 2: {
+            res = dot_quant_float_cpu<2>(posa, posb, sk, tak, tbk, scale, zero_point);
+            break;
+          }
+          case 1: {
+            res = dot_quant_float_cpu<1>(posa, posb, sk, tak, tbk, scale, zero_point);
+            break;
+          }
           default: {
             TORCH_CHECK(false, "Unsupported number of quantization bits '", bits, "'");
           }
@@ -193,6 +201,14 @@ Tensor quantize_and_pack_cpu(Tensor a, unsigned int bits, float scale, float zer
           }
           case 4: {
             quant_pack_float_cpu<4>(posa, posb, sk, tak, tbk, scale, zero_point);
+            break;
+          }
+          case 2: {
+            quant_pack_float_cpu<2>(posa, posb, sk, tak, tbk, scale, zero_point);
+            break;
+          }
+          case 1: {
+            quant_pack_float_cpu<1>(posa, posb, sk, tak, tbk, scale, zero_point);
             break;
           }
           default: {

@@ -21,9 +21,11 @@ class QuantType(Enum):
     half = 1
     qint8 = 2
     qint4 = 3
+    qint2 = 4
+    qint1 = 5
 
 def is_quantized(qtype):
-    return qtype in (QuantType.qint8, QuantType.qint4)
+    return qtype in (QuantType.qint8, QuantType.qint4, QuantType.qint2, QuantType.qint1)
 
 def qtype_to_dtype(qtype):
     if is_quantized(qtype):
@@ -44,6 +46,10 @@ def qtype_to_bits(qtype):
         return 8
     elif qtype == QuantType.qint4:
         return 4
+    elif qtype == QuantType.qint2:
+        return 2
+    elif qtype == QuantType.qint1:
+        return 1
     else:
         raise ValueError(f'Invalid quantization type: {qtype}')
 

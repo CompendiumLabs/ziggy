@@ -15,91 +15,102 @@ DISPATCH_BITWIDTH(bits, [&] {
 
 using namespace torch;
 
-constexpr unsigned int kWarpSize = 32;
+constexpr int64_t kWarpSize = 32;
+constexpr int64_t MAX_GRID = 65535;
 
 template <unsigned int bits>
-__global__ void matmul_quant_float_kernel(uint8_t* a, float* b, float* c, int sn, int sm, int sk, int tan, int tak, int tbk, int tbm, float scale, float zero_point) {
+__global__ void matmul_quant_float_kernel(uint8_t* a, float* b, float* c, int64_t sn, int64_t sm, int64_t sk, int64_t tan, int64_t tak, int64_t tbk, int64_t tbm, float scale, float zero_point) {
   constexpr uint8_t mask = (1 << bits) - 1;
 
-  int i = blockIdx.x * blockDim.x + threadIdx.x;
-  int j = blockIdx.y * blockDim.y + threadIdx.y;
+  int64_t i0 = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t j0 = blockIdx.y * blockDim.y + threadIdx.y;
 
-  if (i < sn && j < sm) {
-    uint8_t* posa = a + i * tan;
-    float* posb = b + j * tbm;
-    float sum = 0.0f;
+  int64_t grid_stride_x = gridDim.x * blockDim.x;
+  int64_t grid_stride_y = gridDim.y * blockDim.y;
 
-    for (int k = 0; k < sk; k++) {
-      // load packed values
-      uint8_t vala = (*posa);
+  for (int64_t i = i0; i < sn; i += grid_stride_x) {
+    for (int64_t j = j0; j < sm; j += grid_stride_y) {
+      uint8_t* posa = a + i * tan;
+      float* posb = b + j * tbm;
+      float sum = 0.0f;
 
-      // unpack into bits-sized values
-      for (int s = 0; s < 8; s += bits) {
-        uint8_t vala_i = (uint8_t)((vala >> s) & mask);
-        float vala_f = (float)vala_i - zero_point;
-        float valb_f = (*posb);
-        sum += vala_f * valb_f;
-        posb += tbk;
+      for (int64_t k = 0; k < sk; k++) {
+        // load packed values
+        uint8_t vala = (*posa);
+
+        // unpack into bits-sized values
+        for (int s = 0; s < 8; s += bits) {
+          uint8_t vala_i = (uint8_t)((vala >> s) & mask);
+          float vala_f = (float)vala_i - zero_point;
+          float valb_f = (*posb);
+          sum += vala_f * valb_f;
+          posb += tbk;
+        }
+
+        // increment base value
+        posa += tak;
       }
 
-      // increment base value
-      posa += tak;
+      c[i * sm + j] = scale*sum;
     }
-
-    c[i * sm + j] = scale*sum;
   }
 }
 
 template <unsigned int bits>
-__global__ void matmul_quant_half_kernel(uint8_t* a, __half* b, __half* c, int sn, int sm, int sk, int tan, int tak, int tbk, int tbm, float scale, float zero_point) {
+__global__ void matmul_quant_half_kernel(uint8_t* a, __half* b, __half* c, int64_t sn, int64_t sm, int64_t sk, int64_t tan, int64_t tak, int64_t tbk, int64_t tbm, float scale, float zero_point) {
   constexpr uint8_t mask = (1 << bits) - 1;
 
   __half scale_h = __float2half(scale);
 
-  int i = blockIdx.x * blockDim.x + threadIdx.x;
-  int j = blockIdx.y * blockDim.y + threadIdx.y;
+  int64_t i0 = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t j0 = blockIdx.y * blockDim.y + threadIdx.y;
 
-  if (i < sn && j < sm) {
-    uint8_t* posa = a + i * tan;
-    __half* posb = b + j * tbm;
-    __half sum = __float2half(0.0f);
+  int64_t grid_stride_x = gridDim.x * blockDim.x;
+  int64_t grid_stride_y = gridDim.y * blockDim.y;
 
-    for (int k = 0; k < sk; k++) {
-      // load packed values
-      uint8_t vala = (*posa);
+  for (int64_t i = i0; i < sn; i += grid_stride_x) {
+    for (int64_t j = j0; j < sm; j += grid_stride_y) {
+      uint8_t* posa = a + i * tan;
+      __half* posb = b + j * tbm;
+      __half sum = __float2half(0.0f);
 
-      // unpack into bits-sized values
-      for (int s = 0; s < 8; s += bits) {
-        uint8_t vala_i = (uint8_t)((vala >> s) & mask);
-        __half vala_h = __float2half((float)vala_i - zero_point);
-        __half valb_h = (*posb);
-        sum = __hadd(sum, __hmul(vala_h, valb_h));
-        posb += tbk;
+      for (int64_t k = 0; k < sk; k++) {
+        // load packed values
+        uint8_t vala = (*posa);
+
+        // unpack into bits-sized values
+        for (int s = 0; s < 8; s += bits) {
+          uint8_t vala_i = (uint8_t)((vala >> s) & mask);
+          __half vala_h = __float2half((float)vala_i - zero_point);
+          __half valb_h = (*posb);
+          sum = __hadd(sum, __hmul(vala_h, valb_h));
+          posb += tbk;
+        }
+
+        // increment base value
+        posa += tak;
       }
 
-      // increment base value
-      posa += tak;
+      c[i * sm + j] = __hmul(scale_h, sum);
     }
-
-    c[i * sm + j] = __hmul(scale_h, sum);
   }
 }
 
 // we need to use unsigned intN packing here
 template <unsigned int bits>
-__global__ void quantize_and_pack_float(float* a, uint8_t* b, int sn, int sk, int tan, int tak, float scale, float zero_point) {
-  constexpr int qFact = 8 / bits;
-  constexpr int pMax = (1 << bits) - 1;
+__global__ void quantize_and_pack_float(float* a, uint8_t* b, int64_t sn, int64_t sk, int64_t tan, int64_t tak, float scale, float zero_point) {
+  constexpr unsigned int qFact = 8 / bits;
+  constexpr unsigned int pMax = (1 << bits) - 1;
   constexpr float pMax_f = (float)pMax;
 
-  const int sk_p = sk / qFact;
+  const int64_t sk_p = sk / qFact;
 
-  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t i = blockIdx.x * blockDim.x + threadIdx.x;
 
   if (i < sn) {
     float* posa = a + i * tan;
 
-    for (int k = 0; k < sk_p; k++) {
+    for (int64_t k = 0; k < sk_p; k++) {
       // init zero bits
       uint8_t valb = 0;
 
@@ -120,22 +131,22 @@ __global__ void quantize_and_pack_float(float* a, uint8_t* b, int sn, int sk, in
 }
 
 template <unsigned int bits>
-__global__ void quantize_and_pack_half(__half* a, uint8_t* b, int sn, int sk, int tan, int tak, float scale, float zero_point) {
-  constexpr int qFact = 8 / bits;
-  constexpr int pMax = (1 << bits) - 1;
+__global__ void quantize_and_pack_half(__half* a, uint8_t* b, int64_t sn, int64_t sk, int64_t tan, int64_t tak, float scale, float zero_point) {
+  constexpr unsigned int qFact = 8 / bits;
+  constexpr unsigned int pMax = (1 << bits) - 1;
 
-  const int sk_p = sk / qFact;
+  const int64_t sk_p = sk / qFact;
   const __half scale_h = __float2half(scale);
   const __half zero_point_h = __float2half(zero_point);
   const __half zero_h = __float2half(0.0f);
   const __half pMax_h = __int2half_rn(pMax);
 
-  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  int64_t i = blockIdx.x * blockDim.x + threadIdx.x;
 
   if (i < sn) {
     __half* posa = a + i * tan;
 
-    for (int k = 0; k < sk_p; k++) {
+    for (int64_t k = 0; k < sk_p; k++) {
       // init zero bits
       uint8_t valb = 0;
 
@@ -171,18 +182,21 @@ Tensor matmul_quant_cuda(Tensor a, Tensor b, unsigned int bits, float scale, flo
   assert(typea == torch::kUInt8);
   assert((8 / bits) * sizesa[1] == sizesb[0]);
 
-  int sn = sizesa[0];
-  int sm = sizesb[1];
-  int sk = sizesa[1];
-  int tan = stridesa[0];
-  int tak = stridesa[1];
-  int tbk = stridesb[0];
-  int tbm = stridesb[1];
+  int64_t sn = sizesa[0];
+  int64_t sm = sizesb[1];
+  int64_t sk = sizesa[1];
+  int64_t tan = stridesa[0];
+  int64_t tak = stridesa[1];
+  int64_t tbk = stridesb[0];
+  int64_t tbm = stridesb[1];
 
   uint8_t* a_ptr = a.data_ptr<uint8_t>();
 
   dim3 threads(kWarpSize, kWarpSize);
-  dim3 blocks((sn + threads.x - 1) / threads.x, (sm + threads.y - 1) / threads.y);
+  dim3 blocks(
+    min(MAX_GRID, (sn + threads.x - 1) / threads.x),
+    min(MAX_GRID, (sm + threads.y - 1) / threads.y)
+  );
 
   switch (typeb) {
     case at::kHalf: {
@@ -256,14 +270,14 @@ Tensor quantize_and_pack_cuda(Tensor a, unsigned int bits, float scale, float ze
   at::IntArrayRef sizesa = a.sizes();
   at::IntArrayRef stridesa = a.strides();
 
-  int sn = sizesa[0];
-  int sk = sizesa[1];
-  int tan = stridesa[0];
-  int tak = stridesa[1];
+  int64_t sn = sizesa[0];
+  int64_t sk = sizesa[1];
+  int64_t tan = stridesa[0];
+  int64_t tak = stridesa[1];
 
-  int sk_p = sk / (8 / bits);
-  int tbm = sk_p;
-  int tbk = 1;
+  int64_t sk_p = sk / (8 / bits);
+  int64_t tbm = sk_p;
+  int64_t tbk = 1;
 
   dim3 threads(kWarpSize);
   dim3 blocks((sn + threads.x - 1) / threads.x);

@@ -2,14 +2,10 @@
 
 #include "matmul_quant_cuda.h"
 
-constexpr int dim = 384;
-constexpr int n = 1048576;
-constexpr int m = 16;
-
 void test_quantized_cuda() {
-  int dim = 8;
-  int n = 4;
-  int m = 4;
+  int64_t dim = 8;
+  int64_t n = 4;
+  int64_t m = 4;
 
   Tensor a = torch::ones({n, dim}, at::device(torch::kCUDA).dtype(torch::kFloat));
   Tensor b = torch::ones({m, dim}, at::device(torch::kCUDA).dtype(torch::kFloat));
@@ -28,8 +24,8 @@ void test_quantized_cuda() {
 }
 
 void test_pack_cuda() {
-  int dim = 8;
-  int n = 4;
+  int64_t dim = 8;
+  int64_t n = 4;
 
   unsigned int bits = 4;
   float scale = 1.0f;

@@ -2,11 +2,11 @@
 
 #include "matmul_quant_cpu.h"
 
-constexpr int64_t dim = 384;
-constexpr int64_t n = 1048576;
-constexpr int64_t m = 16;
-
 void test_quantized_cpu() {
+  int64_t dim = 384;
+  int64_t n = 1048576;
+  int64_t m = 16;
+
   Tensor a = torch::ones({n, dim});
   Tensor b = torch::ones({m, dim});
 

@@ -8,14 +8,14 @@ using namespace torch;
 
 // sub-8 quantization is tricky with AVX2, but memory pressure is lower on CPU
 
-const int BLOCK_SIZE = 16; // = 128 bit / 8 bit
+constexpr int64_t BLOCK_SIZE = 16; // = 128 bit / 8 bit
 
-inline float dot_quant_float_avx2(uint8_t* a, float* b, int n, int ta, int tb, float scale, float zero_point) {
+inline float dot_quant_float_avx2(uint8_t* a, float* b, int64_t n, int64_t ta, int64_t tb, float scale, float zero_point) {
   float sum = 0.0;
   uint8_t* ai = a;
   float* bi = b;
   __m512 zero_f32 = _mm512_set1_ps(zero_point);
-  for (int i = 0; i < n / BLOCK_SIZE; i++) {
+  for (int64_t i = 0; i < n / BLOCK_SIZE; i++) {
     __m128i a_vec_i8 = _mm_loadu_si128((__m128i*)ai); // a
     __m512 b_vec_f32 = _mm512_loadu_ps(bi); // b
     __m512i a_vec_i32 = _mm512_cvtepu8_epi32(a_vec_i8); // int(a)
@@ -32,7 +32,7 @@ inline float dot_quant_float_avx2(uint8_t* a, float* b, int n, int ta, int tb, f
 #endif // __AVX2__
 
 template <unsigned int bits>
-inline float dot_quant_float_cpu(uint8_t* a, float* b, int sk, int tak, int tbk, float scale, float zero_point) {
+inline float dot_quant_float_cpu(uint8_t* a, float* b, int64_t sk, int64_t tak, int64_t tbk, float scale, float zero_point) {
   constexpr uint8_t mask = (1 << bits) - 1;
 
   uint8_t vala_i;
@@ -43,7 +43,7 @@ inline float dot_quant_float_cpu(uint8_t* a, float* b, int sk, int tak, int tbk,
   float* posb = b;
   float sum = 0.0;
 
-  for (int k = 0; k < sk; k++) {
+  for (int64_t k = 0; k < sk; k++) {
     vala_i = (*posa);
 
     for (int s = 0; s < 8; s += bits) {
@@ -61,11 +61,11 @@ inline float dot_quant_float_cpu(uint8_t* a, float* b, int sk, int tak, int tbk,
 }
 
 template <unsigned int bits>
-inline void quant_pack_float_cpu(float* a, uint8_t* b, int sk, int tak, int tbk, float scale, float zero_point) {
+inline void quant_pack_float_cpu(float* a, uint8_t* b, int64_t sk, int64_t tak, int64_t tbk, float scale, float zero_point) {
   constexpr int qFact = 8 / bits;
   constexpr int pMax = (1 << bits) - 1;
 
-  const int sk_p = sk / qFact;
+  const int64_t sk_p = sk / qFact;
   const float pMax_f = (float)pMax;
 
   float vala_f;
@@ -75,7 +75,7 @@ inline void quant_pack_float_cpu(float* a, uint8_t* b, int sk, int tak, int tbk,
   float* posa = a;
   uint8_t* posb = b;
 
-  for (int k = 0; k < sk_p; k++) {
+  for (int64_t k = 0; k < sk_p; k++) {
     valb = 0;
 
     for (int s = 0; s < 8; s += bits) {
@@ -109,13 +109,13 @@ Tensor matmul_quant_cpu(Tensor a, Tensor b, unsigned int bits, float scale, floa
   assert(typeb == torch::kFloat);
   assert((8 / bits) * sizesa[1] == sizesb[0]);
 
-  int sn = sizesa[0];
-  int sm = sizesb[1];
-  int sk = sizesa[1];
-  int tan = stridesa[0];
-  int tak = stridesa[1];
-  int tbk = stridesb[0];
-  int tbm = stridesb[1];
+  int64_t sn = sizesa[0];
+  int64_t sm = sizesb[1];
+  int64_t sk = sizesa[1];
+  int64_t tan = stridesa[0];
+  int64_t tak = stridesa[1];
+  int64_t tbk = stridesb[0];
+  int64_t tbm = stridesb[1];
 
   Tensor c = torch::empty({sn, sm}, at::device(kCPU).dtype(torch::kFloat));
 
@@ -123,12 +123,12 @@ Tensor matmul_quant_cpu(Tensor a, Tensor b, unsigned int bits, float scale, floa
   float* b_ptr = b.data_ptr<float>();
   float* c_ptr = c.data_ptr<float>();
 
-  at::parallel_for(0, sn, 0, [&](int i0, int i1) {
+  at::parallel_for(0, sn, 0, [&](int64_t i0, int64_t i1) {
     uint8_t* posa;
     float* posb;
     float res;
-    for (int i = i0; i < i1; i++) {
-      for (int j = 0; j < sm; j++) {
+    for (int64_t i = i0; i < i1; i++) {
+      for (int64_t j = 0; j < sm; j++) {
         posa = a_ptr + i * tan;
         posb = b_ptr + j * tbm;
 
@@ -173,24 +173,24 @@ Tensor quantize_and_pack_cpu(Tensor a, unsigned int bits, float scale, float zer
 
   assert(typea == torch::kFloat);
 
-  int sn = sizesa[0];
-  int sk = sizesa[1];
-  int tan = stridesa[0];
-  int tak = stridesa[1];
+  int64_t sn = sizesa[0];
+  int64_t sk = sizesa[1];
+  int64_t tan = stridesa[0];
+  int64_t tak = stridesa[1];
 
-  int sk_p = sk / (8 / bits);
-  int tbm = sk_p;
-  int tbk = 1;
+  int64_t sk_p = sk / (8 / bits);
+  int64_t tbm = sk_p;
+  int64_t tbk = 1;
 
   Tensor b = torch::empty({sn, sk_p}, torch::device(kCPU).dtype(torch::kUInt8));
 
   float* a_ptr = a.data_ptr<float>();
   uint8_t* b_ptr = b.data_ptr<uint8_t>();
 
-  at::parallel_for(0, sn, 0, [&](int i0, int i1) {
+  at::parallel_for(0, sn, 0, [&](int64_t i0, int64_t i1) {
     float* posa;
     uint8_t* posb;
-    for (int i = i0; i < i1; i++) {
+    for (int64_t i = i0; i < i1; i++) {
         posa = a_ptr + i * tan;
         posb = b_ptr + i * tbm;
 

@@ -44,7 +44,7 @@ class DocumentDatabase:
     def __init__(
             self, embed=DEFAULT_EMBED, delim='\n{2,}', minlen=1, batch_size=1024,
             model_device='cuda', index_device='cuda', doc_index=True, dims=None,
-            load=None, qspec=Float, **kwargs
+            allocate=True, qspec=Float, **kwargs
         ):
         # instantiate model and embedding
         self.embed = HuggingfaceEmbedding(embed, device=model_device) if type(embed) is str else embed
@@ -55,9 +55,7 @@ class DocumentDatabase:
         self.batch_size = batch_size
 
         # initalize index
-        if load:
-            self.load(load)
-        else:
+        if allocate:
             self.chunks = {}
             self.cindex = TorchVectorIndex(self.dims, device=index_device, qspec=qspec, **kwargs)
             self.dindex = TorchVectorIndex(self.dims, device=index_device, qspec=qspec, **kwargs) if doc_index else None
@@ -77,22 +75,22 @@ class DocumentDatabase:
                 print('█', end='', flush=True)
         return self
 
-    def load(self, path):
+    @classmethod
+    def load(cls, path, **kwargs):
         data = torch.load(path) if type(path) is str else path
+        self = cls(allocate=False, **kwargs)
         self.chunks = data['chunks']
-        self.cindex.load(data['cindex'])
-        self.dindex.load(data['dindex'])
+        self.cindex = TorchVectorIndex.load(data['cindex'])
+        self.dindex = TorchVectorIndex.load(data['dindex']) if 'dindex' in data else None
         return self
 
-    def save(self, path=None, compress=True):
-        if compress:
-            self.cindex.compress()
-            self.dindex.compress()
+    def save(self, path=None):
         data = {
             'chunks': self.chunks,
             'cindex': self.cindex.save(),
-            'dindex': self.dindex.save()
         }
+        if self.dindex is not None:
+            data['dindex'] = self.dindex.save()
         if path is None:
             return data
         else:

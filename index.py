@@ -12,15 +12,13 @@ from utils import IndexDict, resize_alloc, next_power_of_2
 
 class TorchVectorIndex:
     def __init__(
-        self, dims=None, size=1024, load=None, device='cuda', qspec=Float
+        self, dims=None, size=1024, device='cuda', qspec=Float, allocate=True
     ):
         # set runtime options
         self.device = device
 
         # init state
-        if load is not None:
-            self.load(load)
-        else:
+        if allocate:
             # default datatype
             if qspec is None:
                 qspec = Half if device == 'cuda' else Float
@@ -31,24 +29,22 @@ class TorchVectorIndex:
             self.values = QuantizedEmbedding(size, dims, qspec=qspec, device=device)
             self.groups = torch.empty(size, device=self.device, dtype=torch.int32)
 
-    def load(self, path):
-        data = torch.load(path) if type(path) is str else path
+    @classmethod
+    def load(cls, data, **kwargs):
+        self = cls(allocate=False, **kwargs)
         self.labels = data['labels']
         self.grpids = IndexDict.load(data['grpids'])
         self.values = QuantizedEmbedding.load(data['values'])
         self.groups = data['groups']
+        return self
 
-    def save(self, path=None):
-        data = {
+    def save(self):
+        return {
             'labels': self.labels,
             'grpids': self.grpids.save(),
             'values': self.values.save(),
             'groups': self.groups,
         }
-        if path is not None:
-            torch.save(data, path)
-        else:
-            return data
 
     def size(self):
         return len(self.labels)

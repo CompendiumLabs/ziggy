@@ -153,17 +153,13 @@ class QuantizedEmbedding:
     def load(cls, data):
         size, dims = data['data'].size()
         qspec = QuantSpec.load(data['qspec'])
-        return cls(size, dims, qspec=qspec, packed_data=data['data'])
+        return cls(size, dims, qspec=qspec, qdata=data['data'])
 
-    def save(self, path=None):
-        data = {
+    def save(self):
+        return {
             'qspec': self.qspec.save(),
             'data': self.data,
         }
-        if path is not None:
-            torch.save(data, path)
-        else:
-            return data
 
     def size(self):
         return self.data.size(0)

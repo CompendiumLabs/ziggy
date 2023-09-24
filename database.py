@@ -13,7 +13,7 @@ from torch.nn.functional import normalize
 from llm import DEFAULT_EMBED, HuggingfaceEmbedding
 from index import TorchVectorIndex
 from quant import Float
-from utils import batch_generator, l2_mean, cumul_indices, groupby_dict
+from utils import batch_generator, cumul_indices, groupby_dict
 
 ##
 ## Utils
@@ -63,7 +63,7 @@ class DocumentDatabase:
     @classmethod
     def from_jsonl(
         cls, path, name_col='title', text_col='text', doc_batch=1024, maxrows=None,
-        progress=True, maxsize=10, **kwargs
+        progress=True, **kwargs
     ):
         self = cls(**kwargs)
         lines = stream_jsonl(path, maxrows=maxrows)
@@ -76,12 +76,12 @@ class DocumentDatabase:
         return self
 
     @classmethod
-    def load(cls, path, **kwargs):
-        data = torch.load(path) if type(path) is str else path
+    def load(cls, path, device='cuda', **kwargs):
+        data = torch.load(path, map_location=device) if type(path) is str else path
         self = cls(allocate=False, **kwargs)
         self.chunks = data['chunks']
-        self.cindex = TorchVectorIndex.load(data['cindex'])
-        self.dindex = TorchVectorIndex.load(data['dindex']) if 'dindex' in data else None
+        self.cindex = TorchVectorIndex.load(data['cindex'], device=device)
+        self.dindex = TorchVectorIndex.load(data['dindex'], device=device) if 'dindex' in data else None
         return self
 
     def save(self, path=None):
@@ -127,7 +127,7 @@ class DocumentDatabase:
         # make document level embeddings
         if self.dindex is not None:
             docemb = normalize(torch.stack([
-                l2_mean(embeds[i:j,:], dim=0) for i, j in cumul_indices(chunk_sizes)
+                embeds[i:j,:].mean(dim=0) for i, j in cumul_indices(chunk_sizes)
             ], dim=0))
             self.dindex.add(names, docemb)
 

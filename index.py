@@ -30,11 +30,11 @@ class TorchVectorIndex:
             self.groups = torch.empty(size, device=self.device, dtype=torch.int32)
 
     @classmethod
-    def load(cls, data, **kwargs):
-        self = cls(allocate=False, **kwargs)
+    def load(cls, data, device='cuda', **kwargs):
+        self = cls(allocate=False, device=device, **kwargs)
         self.labels = data['labels']
         self.grpids = IndexDict.load(data['grpids'])
-        self.values = QuantizedEmbedding.load(data['values'])
+        self.values = QuantizedEmbedding.load(data['values'], device=device)
         self.groups = data['groups']
         return self
 

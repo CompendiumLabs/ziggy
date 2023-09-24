@@ -4,13 +4,13 @@ from math import ceil
 from itertools import chain
 import os
 import torch
-import torch.nn.functional as F
 
+from torch.nn.functional import normalize
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
 from sentence_transformers import SentenceTransformer
 from llama_cpp import Llama
 
-from utils import l2_mean, pipeline_threads, batch_generator, cumul_bounds, sprint
+from utils import pipeline_threads, batch_generator, cumul_bounds, sprint
 
 ##
 ## Constants
@@ -121,7 +121,7 @@ class HuggingfaceModel:
         embed = (state*mask).sum(1)/mask.sum(1)
 
         # return normalized embedding
-        return F.normalize(embed, dim=-1)
+        return normalize(embed, dim=-1)
 
     # proper python generator variant that uses model.__call__ directly
     def generate(self, prompt, chat=True, context=2048, maxlen=2048, top_k=10, temp=1.0):
@@ -215,7 +215,7 @@ class HuggingfaceEmbedding:
         # embed chunks and average
         with torch.no_grad():
             vecs = self.model.encode(list(chain(*chunks)), **args)
-        means = torch.stack([l2_mean(vecs[i:j,:], dim=0) for i, j in bounds])
+        means = torch.stack([vecs[i:j,:].mean(dim=0) for i, j in bounds])
 
         # return normalized vectors
         return means
@@ -270,7 +270,7 @@ class HuggingfaceEmbeddingONNX:
         embed = (state*mask).sum(1)/mask.sum(1)
 
         # return normalized embedding
-        return F.normalize(embed, dim=-1)
+        return normalize(embed, dim=-1)
 
     def embed_batch(self, text, **kwargs):
         input_ids, attention_mask = self.tokenize_batch(text, **kwargs)
@@ -296,8 +296,8 @@ class HuggingfaceEmbeddingONNX:
 
         # embed chunks and average
         pipeline_threads(loader(), tokenizer, forwarder, maxsize=256)
-        embed = torch.cat(results, dim=0)
-        means = torch.stack([l2_mean(embed[i:j,:], dim=0) for i, j in bounds])
+        embed = torch.cat(results, dim=0) # combine batches
+        means = torch.stack([embed[i:j,:].mean(dim=0) for i, j in bounds], dim=0)
 
         # return normalized vectors
-        return F.normalize(means, dim=-1)
+        return normalize(means, dim=-1)

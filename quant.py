@@ -156,10 +156,10 @@ class QuantizedEmbedding:
         self.raw = Accessor(self.data)
 
     @classmethod
-    def load(cls, data):
+    def load(cls, data, device='cuda'):
         size, dims = data['data'].size()
         qspec = QuantSpec.load(data['qspec'])
-        return cls(size, dims, qspec=qspec, qdata=data['data'])
+        return cls(size, dims, qspec=qspec, qdata=data['data'], device=device)
 
     def save(self):
         return {

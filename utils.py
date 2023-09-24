@@ -128,9 +128,6 @@ class Bundle(dict):
 def resize_alloc(a, size):
     a.resize_(size, *a.shape[1:])
 
-def l2_mean(a, dim=0):
-    return a.square().mean(dim=dim).sqrt()
-
 ##
 ## async rig
 ##

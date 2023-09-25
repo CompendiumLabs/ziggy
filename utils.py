@@ -217,22 +217,26 @@ def pipeline_threads(load, *funcs, maxsize=0):
     for t in chain(*threads):
         t.start()
 
-    # put data in load queue
-    for i in load:
-        queue_load.put(i)
+    # handle keyboard interrupt gracefully
+    try:
+        # put data in load queue
+        for i in load:
+            queue_load.put(i)
 
-    # wait for all data to be processed
-    for q in queues[:-1]:
-        q.join()
+        # wait for all data to be processed
+        for q in queues[:-1]:
+            q.join()
+    except KeyboardInterrupt:
+        print('Terminating threads...')
+    finally:
+        # stop all threads
+        for (_, n), t, q in zip(funcs, threads, queues[:-1]):
+            for _ in range(n):
+                q.put(None)
 
-    # stop all threads
-    for (_, n), t, q in zip(funcs, threads, queues[:-1]):
-        for _ in range(n):
-            q.put(None)
+        # wait for all threads
+        for t in chain(*threads):
+            t.join()
 
-    # wait for all threads
-    for t in chain(*threads):
-        t.join()
-
-    # print number processed
-    return queue_work[-1].qsize()
+        # print number processed
+        return queue_work[-1].qsize()

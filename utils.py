@@ -3,11 +3,9 @@
 from math import ceil, log2
 from itertools import chain, islice, accumulate, groupby
 from operator import itemgetter
-from queue import Queue
-from threading import Thread
+from threading import Thread, Event
+from queue import Queue, Empty
 import toml
-import operator
-import asyncio
 
 ##
 ## pure play python
@@ -110,7 +108,7 @@ class Bundle(dict):
         return sorted(super().keys())
 
     def items(self):
-        return sorted(super().items(), key=operator.itemgetter(0))
+        return sorted(super().items(), key=itemgetter(0))
 
     def values(self):
         return [k for k, _ in self.items()]
@@ -129,87 +127,35 @@ def resize_alloc(a, size):
     a.resize_(size, *a.shape[1:])
 
 ##
-## async rig
+## thread rig
 ##
 
-# enqueue batch generator
-async def loader_async(queue, stream):
-    for batch in stream:
-        await queue.put(batch)
-
-# process queue items
-async def worker_async(queue_prev, queue_next, func):
-    while True:
-        data = await queue_prev.get()
-        await queue_next.put(func(data))
-        queue_prev.task_done()
-
-async def counter_async(queue, total):
-    while True:
-        data = await queue.get()
-        total[0] += 1
-        queue.task_done()
-
-# asnychronous indexer
-async def pipeline_async_func(stream, *funcs, maxsize=0):
-    # handle multiple workers
-    funcs = [(f, 1) if type(f) is not tuple else f for f in funcs]
-
-    # create queue
-    queue_load = asyncio.Queue(maxsize=maxsize)
-    queue_work = [asyncio.Queue(maxsize=maxsize) for _ in funcs]
-
-    # initialize loader
-    loader = asyncio.create_task(loader_async(queue_load, stream))
-    queue_prev = queue_load
-
-    # hook up queue
-    workers = []
-    for (func, num), queue_next in zip(funcs, queue_work):
-        tasks = [
-            asyncio.create_task(worker_async(queue_prev, queue_next, func)) for _ in range(num)
-        ]
-        workers += tasks
-        queue_prev = queue_next
-
-    # initialize counter
-    total = [0]
-    counter = asyncio.create_task(counter_async(queue_next, total))
-
-    # wait for load to finish
-    await loader
-
-    # finish remaining tasks
-    await asyncio.gather(*[q.join() for q in queue_work])
-
-    # cancel workers
-    for worker in workers:
-        worker.cancel()
-    counter.cancel()
-
-    # get results
-    return total[0]
-
-def pipeline_async(stream, *funcs, **kwargs):
-    return asyncio.run(pipeline_async_func(stream, *funcs, **kwargs))
-
 # process queue items (None terminates)
-def worker_thread(func, queue_prev, queue_next):
-    for data in iter(queue_prev.get, None):
-        queue_next.put(func(data))
-        queue_prev.task_done()
+def worker_thread(func, queue_prev, queue_next, kill, poll):
+    while True:
+        try:
+            data = queue_prev.get(timeout=poll)
+            queue_next.put(func(data))
+            queue_prev.task_done()
+        except Empty:
+            pass
+        if kill.is_set():
+            break
 
-def pipeline_threads(load, *funcs, maxsize=0):
+def pipeline_threads(load, *funcs, maxsize=0, poll=0.01):
     funcs = [(f, 1) if type(f) is not tuple else f for f in funcs]
 
     # create queues (last should be unbounded)
     queue_load = Queue(maxsize=maxsize)
     queue_work = [Queue(maxsize=maxsize) for _ in funcs[:-1]] + [Queue()]
     queues = [queue_load] + queue_work
+    kill = Event()
 
     # create num threads for each function
     threads = [
-        [Thread(target=worker_thread, args=(f, q0, q1)) for _ in range(n)]
+        [
+            Thread(target=worker_thread, args=(f, q0, q1, kill, poll)) for _ in range(n)
+        ]
         for (f, n), q0, q1 in zip(funcs, queues[:-1], queues[1:])
     ]
 
@@ -230,9 +176,7 @@ def pipeline_threads(load, *funcs, maxsize=0):
         print('Terminating threads...')
     finally:
         # stop all threads
-        for (_, n), t, q in zip(funcs, threads, queues[:-1]):
-            for _ in range(n):
-                q.put(None)
+        kill.set()
 
         # wait for all threads
         for t in chain(*threads):

@@ -1,30 +1,36 @@
 import time
 from itertools import chain
-from queue import Queue
-from threading import Thread
+from threading import Thread, Event
+from queue import Queue, Empty
 
 def double(x):
     time.sleep(0.1)
     return 2*x
 
 # process queue items (None terminates)
-def worker(func, queue_prev, queue_next):
-    for data in iter(queue_prev.get, None):
-        queue_next.put(func(data))
-        print(data)
-        queue_prev.task_done()
+def worker(func, queue_prev, queue_next, kill, poll):
+    while True:
+        try:
+            data = queue_prev.get(timeout=poll)
+            queue_next.put(func(data))
+            queue_prev.task_done()
+        except Empty:
+            pass
+        if kill.is_set():
+            break
 
-def pipeline_threads(load, *funcs, maxsize=0):
+def pipeline_threads(load, *funcs, maxsize=0, poll=0.01):
     funcs = [(f, 1) if type(f) is not tuple else f for f in funcs]
 
     # create queues (last should be unbounded)
     queue_load = Queue(maxsize=maxsize)
     queue_work = [Queue(maxsize=maxsize) for _ in funcs[:-1]] + [Queue()]
     queues = [queue_load] + queue_work
+    kill = Event()
 
     # create num threads for each function
     threads = [
-        [Thread(target=worker, args=(f, q0, q1)) for _ in range(n)]
+        [Thread(target=worker, args=(f, q0, q1, kill, poll)) for _ in range(n)]
         for (f, n), q0, q1 in zip(funcs, queues[:-1], queues[1:])
     ]
 
@@ -32,25 +38,42 @@ def pipeline_threads(load, *funcs, maxsize=0):
     for t in chain(*threads):
         t.start()
 
-    # put data in load queue
-    for i in load:
-        queue_load.put(i)
+    # handle keyboard interrupt gracefully
+    try:
+        # put data in load queue
+        for i in load:
+            queue_load.put(i)
 
-    # wait for all data to be processed
-    for q in queues[:-1]:
-        q.join()
+        # wait for all data to be processed
+        for q in queues[:-1]:
+            q.join()
+    except KeyboardInterrupt:
+        print('Terminating threads...')
+    finally:
+        # stop all threads
+        kill.set()
 
-    # stop all threads
-    for (_, n), t, q in zip(funcs, threads, queues[:-1]):
-        for _ in range(n):
-            q.put(None)
+        # wait for all threads
+        for t in chain(*threads):
+            t.join()
 
-    # wait for all threads
-    for t in chain(*threads):
-        t.join()
-
-    # print number processed
-    print(queue_work[-1].qsize())
+        # print number processed
+        return queue_work[-1].qsize()
 
 if __name__ == '__main__':
-    pipeline_threads(range(20), (double, 2), (double, 2), maxsize=10)
+    # create data
+    load = range(10)
+
+    # store data
+    data = []
+    def store(x):
+        data.append(x)
+
+    # run pipeline
+    start = time.time()
+    n = pipeline_threads(load, (double, 2), (double, 2), store, maxsize=10)
+    end = time.time()
+
+    # print results
+    print('Processed {} items in {} seconds'.format(n, end - start))
+    print(data)

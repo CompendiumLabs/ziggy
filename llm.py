@@ -292,3 +292,56 @@ class HuggingfaceEmbedding:
 
         # return normalized vectors
         return means
+
+##
+## meta seamless model
+##
+
+try:
+    from seamless_communication.models.inference import Translator
+except:
+    print('Seamless not available.')
+
+class SeamlessEmbedding:
+    def __init__(self, model_size='large', vocoder='vocoder_36langs', device='cuda'):
+        self.device = torch.device(device)
+        self.translator = Translator(
+            f'seamlessM4T_{model_size}', vocoder_name_or_card=vocoder, device=self.device
+        )
+
+    def encode(self, text, lang):
+        # handle unit case
+        text = [text] if type(text) is str else text
+
+        # make encoder for lang
+        token_encoder = self.translator.text_tokenizer.create_encoder(
+            task='translation', lang=lang, mode='source', device=self.device
+        )
+
+        # encode into input ids
+        toks = [token_encoder(s) for s in text]
+
+        # compute sequence lengths
+        src = self.translator.collate(toks)
+        return src['seqs'], src['seq_lens']
+
+    def embed(self, text, lang):
+        # encode into input ids
+        src, src_len = self.encode(text, lang)
+
+        # run through model
+        outf, maskf = self.translator.model.text_encoder_frontend(src, src_len)
+        out, mask = self.translator.model.text_encoder(outf, maskf)
+
+        # make mask if none
+        if mask is None:
+            mask = torch.zeros(
+                out.size(0), out.size(1), device=out.device, dtype=out.dtype
+            )
+
+        # aggregate over sequence length
+        weight = mask.exp().unsqueeze(-1)
+        embed = (out*weight).sum(1)/weight.sum(1)
+
+        # return normalized embedding
+        return normalize(embed, dim=-1)

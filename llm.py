@@ -302,7 +302,7 @@ try:
 except:
     print('Seamless not available.')
 
-class SeamlessEmbedding:
+class SeamlessModel:
     def __init__(self, model_size='large', vocoder='vocoder_36langs', device='cuda'):
         self.device = torch.device(device)
         self.translator = Translator(
@@ -345,3 +345,7 @@ class SeamlessEmbedding:
 
         # return normalized embedding
         return normalize(embed, dim=-1)
+
+    def translate(self, text, src_lang, tgt_lang):
+        trans, _, _ = self.translator.predict(text, 't2tt', tgt_lang, src_lang)
+        return str(trans)

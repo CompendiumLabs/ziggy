@@ -303,13 +303,19 @@ except:
     print('Seamless not available.')
 
 class SeamlessModel:
-    def __init__(self, model_size='large', vocoder='vocoder_36langs', device='cuda'):
+    def __init__(self, model_size='large', vocoder='vocoder_36langs', device='cuda', lang='eng'):
         self.device = torch.device(device)
         self.translator = Translator(
             f'seamlessM4T_{model_size}', vocoder_name_or_card=vocoder, device=self.device
         )
+        self.dims = self.translator.model.text_encoder_frontend.model_dim
+        self.maxlen = self.translator.model.text_encoder_frontend.pos_encoder.max_seq_len
+        self.lang = lang
 
-    def encode(self, text, lang):
+    def encode(self, text, lang=None):
+        # use default language
+        lang = self.lang if lang is None else lang
+
         # handle unit case
         text = [text] if type(text) is str else text
 
@@ -321,17 +327,22 @@ class SeamlessModel:
         # encode into input ids
         toks = [token_encoder(s) for s in text]
 
-        # compute sequence lengths
+        # compute sequence lengths and clip to maxlen
         src = self.translator.collate(toks)
-        return src['seqs'], src['seq_lens']
+        seqs = src['seqs'][:,:self.maxlen]
+        seq_lens = src['seq_lens'].clip(max=self.maxlen)
 
-    def embed(self, text, lang):
+        # return pair
+        return seqs, seq_lens
+
+    def embed_batch(self, text, lang=None):
         # encode into input ids
         src, src_len = self.encode(text, lang)
 
         # run through model
-        outf, maskf = self.translator.model.text_encoder_frontend(src, src_len)
-        out, mask = self.translator.model.text_encoder(outf, maskf)
+        with torch.no_grad():
+            outf, maskf = self.translator.model.text_encoder_frontend(src, src_len)
+            out, mask = self.translator.model.text_encoder(outf, maskf)
 
         # make mask if none
         if mask is None:
@@ -345,6 +356,11 @@ class SeamlessModel:
 
         # return normalized embedding
         return normalize(embed, dim=-1)
+
+    def embed(self, text, lang=None, batch_size=32):
+        return torch.cat([
+            self.embed_batch(batch, lang=lang) for batch in batch_generator(iter(text), batch_size)
+        ], dim=0)
 
     def translate(self, text, src_lang, tgt_lang):
         trans, _, _ = self.translator.predict(text, 't2tt', tgt_lang, src_lang)

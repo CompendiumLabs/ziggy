@@ -21,7 +21,10 @@ from utils import batch_generator, cumul_indices, groupby_dict
 
 # default paragraph splitter
 def paragraph_splitter(text, delim='\n{2,}', minlen=1):
-    paras = [para.strip() for para in re.split(delim, text)]
+    if delim is not None:
+        paras = [para.strip() for para in re.split(delim, text)]
+    else:
+        paras = [text]
     return [para for para in paras if len(para) >= minlen]
 
 # robust text reader (for encoding errors)

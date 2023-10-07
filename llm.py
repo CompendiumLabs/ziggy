@@ -299,18 +299,71 @@ class HuggingfaceEmbedding:
 
 try:
     from seamless_communication.models.inference import Translator
+    import onnxruntime as ort
 except:
     print('Seamless not available.')
 
 class SeamlessModel:
-    def __init__(self, model_size='large', vocoder='vocoder_36langs', device='cuda', lang='eng'):
-        self.device = torch.device(device)
+    def __init__(
+            self, model_size='large', vocoder='vocoder_36langs', device='cuda', lang='eng',
+            onnx=False, save_dir='onnx/seamless'
+        ):
+        # options
+        self.device = device
+        self.lang = lang
+
+        # create seamless model
         self.translator = Translator(
-            f'seamlessM4T_{model_size}', vocoder_name_or_card=vocoder, device=self.device
+            f'seamlessM4T_{model_size}', vocoder_name_or_card=vocoder, device=torch.device(device)
         )
+
+        # store model params
         self.dims = self.translator.model.text_encoder_frontend.model_dim
         self.maxlen = self.translator.model.text_encoder_frontend.pos_encoder.max_seq_len
-        self.lang = lang
+
+        if onnx:
+            seqs = torch.zeros(1, 1, dtype=torch.int64, device=device)
+            seq_lens = torch.zeros(1, dtype=torch.int64, device=device)
+            embedf = torch.zeros(1, 1, self.dims, dtype=torch.half, device=device)
+            maskf = torch.zeros(1, 1, dtype=torch.half, device=device)
+
+            enc_front_path = os.path.join(save_dir, 'enc_front.onnx')
+            enc_path = os.path.join(save_dir, 'enc.onnx')
+
+            torch.onnx.export(
+                self.translator.model.text_encoder_frontend, (seqs, seq_lens), enc_front_path,
+                input_names=['seqs', 'seq_lens'], output_names=['embedf', 'maskf'],
+                dynamic_axes={'seqs': [0, 1], 'seq_lens': [0]}, opset_version=16
+            )
+            torch.onnx.export(
+                self.translator.model.text_encoder, (embedf, maskf), enc_path,
+                input_names=['embedf', 'maskf'], output_names=['embed', 'mask'],
+                dynamic_axes={'embedf': [0, 1], 'maskf': [0]}, opset_version=16
+            )
+
+            self.onnx = True
+            self.enc_front_onnx = ort.InferenceSession(
+                enc_front_path, providers=['CUDAExecutionProvider']
+            )
+            self.enc_onnx = ort.InferenceSession(
+                enc_path, providers=['CUDAExecutionProvider']
+            )
+        else:
+            self.onnx = False
+
+    def forward(self, seqs, seq_lens):
+        if self.enc_front_onnx is None:
+            embedf, maskf = self.translator.model.text_encoder_frontend(seqs, seq_lens)
+            embed, mask = self.translator.model.text_encoder(embedf, maskf)
+            return embed, mask
+        else:
+            embedf, maskf = self.enc_front_onnx.run(
+                None, {'seqs': seqs.cpu().numpy(), 'seq_lens': seq_lens.cpu().numpy()}
+            )
+            embed, mask = self.enc_onnx.run(
+                None, {'embedf': embedf, 'maskf': maskf}
+            )
+            return torch.from_numpy(embed).to(self.device), torch.from_numpy(mask).to(self.device)
 
     def encode(self, text, lang=None):
         # use default language
@@ -321,7 +374,7 @@ class SeamlessModel:
 
         # make encoder for lang
         token_encoder = self.translator.text_tokenizer.create_encoder(
-            task='translation', lang=lang, mode='source', device=self.device
+            task='translation', lang=lang, mode='source', device=torch.device(self.device)
         )
 
         # encode into input ids

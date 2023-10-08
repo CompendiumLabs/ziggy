@@ -65,14 +65,14 @@ class DocumentDatabase:
     @classmethod
     def from_jsonl(
         cls, path, name_col='title', text_col='text', doc_batch=1024, maxrows=None,
-        progress=True, **kwargs
+        progress=True, batch_size=128, threaded=True, **kwargs
     ):
         self = cls(**kwargs)
         lines = stream_jsonl(path, maxrows=maxrows)
         for batch in batch_generator(lines, doc_batch):
             self.index_docs([
                 (row[name_col], row[text_col]) for row in batch
-            ])
+            ], batch_size=batch_size, threaded=threaded)
             if progress:
                 print('█', end='', flush=True)
         return self
@@ -105,7 +105,7 @@ class DocumentDatabase:
         chunks = {k: v for k, v in chunks.items() if len(v) > 0}
         return chunks
 
-    def index_chunks(self, chunks):
+    def index_chunks(self, chunks, **kwargs):
         # get names and labels
         names = list(chunks)
         labels = [(n, j) for n, c in chunks.items() for j in range(len(c))]
@@ -119,7 +119,7 @@ class DocumentDatabase:
         # embed chunks with chosen batch_size
         chunk_iter = chain(*chunks.values())
         embeds = torch.cat([
-            self.embed.embed(list(islice(chunk_iter, self.batch_size))) for i in range(nbatch)
+            self.embed.embed(list(islice(chunk_iter, self.batch_size)), **kwargs) for i in range(nbatch)
         ], dim=0)
 
         # update chunks and add to index
@@ -133,9 +133,9 @@ class DocumentDatabase:
             ], dim=0), dim=-1)
             self.dindex.add(names, docemb)
 
-    def index_docs(self, texts):
+    def index_docs(self, texts, **kwargs):
         chunks = self.process_docs(texts)
-        self.index_chunks(chunks)
+        self.index_chunks(chunks, **kwargs)
 
     def search(self, query, kd=25, kc=10, cutoff=-torch.inf):
         # embed query string

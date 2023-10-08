@@ -6,7 +6,7 @@ import os
 import torch
 
 from torch.nn.functional import normalize
-from transformers import AutoTokenizer, AutoModelForCausalLM, AutoConfig
+from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM, AutoConfig
 from sentence_transformers import SentenceTransformer
 from llama_cpp import Llama
 
@@ -18,7 +18,7 @@ from utils import pipeline_threads, batch_generator, cumul_bounds, sprint
 
 # default settings
 DEFAULT_MODEL = 'meta-llama/Llama-2-7b-chat-hf'
-DEFAULT_EMBED = 'all-MiniLM-L6-v2'
+DEFAULT_EMBED = 'sentence-transformers/all-MiniLM-L6-v2'
 
 # llama special strings
 B_INST, E_INST = "[INST]", "[/INST]"
@@ -201,20 +201,19 @@ class HuggingfaceEmbedding:
     def __init__(self, model_id=DEFAULT_EMBED, save_dir='onnx', device='cuda', onnx=False, compile=False):
         # runtime options
         self.device = device
-        transformer_path = f'sentence-transformers/{model_id}'
 
         # load params
         if onnx:
             ModelConstructor = ORTModelForFeatureExtraction.from_pretrained
             model_path = os.path.join(save_dir, model_id)
         else:
-            ModelConstructor = SentenceTransformer
+            ModelConstructor = AutoModel.from_pretrained
             model_path = model_id
 
         # compile if needed
         if onnx and (compile or not os.path.isdir(model_id)):
             model = ORTModelForFeatureExtraction.from_pretrained(
-                transformer_path, export=True
+                model_id, export=True
             )
             optimization_config = OptimizationConfig(
                 optimization_level=99, optimize_for_gpu=True, fp16=True
@@ -225,16 +224,12 @@ class HuggingfaceEmbedding:
             )
 
         # load model
-        self.tokenizer = AutoTokenizer.from_pretrained(transformer_path)
+        self.tokenizer = AutoTokenizer.from_pretrained(model_id)
         self.model = ModelConstructor(model_path).to(device)
 
         # get model info
-        if onnx:
-            self.maxlen = self.model.config.max_position_embeddings
-            self.dims = self.model.config.hidden_size
-        else:
-            self.maxlen = self.model.get_max_seq_length()
-            self.dims = self.model.get_sentence_embedding_dimension()
+        self.maxlen = self.model.config.max_position_embeddings
+        self.dims = self.model.config.hidden_size
 
     def tokenize_batch(self, text, **kwargs):
         targs = {'padding': True, 'truncation': True, **kwargs}
@@ -264,7 +259,7 @@ class HuggingfaceEmbedding:
         input_ids, attention_mask = self.tokenize_batch(text, **kwargs)
         return self.forward_batch(input_ids, attention_mask)
 
-    def embed(self, text, maxlen=None, batch_size=128):
+    def embed(self, text, maxlen=None, batch_size=128, threaded=True):
         # handle unit case
         if type(text) is str:
             text = [text]
@@ -274,17 +269,25 @@ class HuggingfaceEmbedding:
         chunks = [length_splitter(t, maxlen) for t in text]
         bounds = cumul_bounds([len(c) for c in chunks])
 
-        # make workers
-        results = []
-        def loader():
-            yield from batch_generator(chain(*chunks), batch_size)
-        def tokenizer(texts):
-            return self.tokenize_batch(texts)
-        def forwarder(data):
-            results.append(self.forward_batch(*data))
+        if threaded:
+            # make workers
+            results = []
+            def loader():
+                yield from batch_generator(chain(*chunks), batch_size)
+            def tokenizer(texts):
+                return self.tokenize_batch(texts)
+            def forwarder(data):
+                results.append(self.forward_batch(*data))
 
-        # embed chunks and average
-        pipeline_threads(loader(), tokenizer, forwarder, maxsize=256)
+            # embed chunks and average
+            pipeline_threads(loader(), tokenizer, forwarder, maxsize=256)
+        else:
+            # embed chunks and average
+            results = [
+                self.embed_batch(chunk) for chunk in batch_generator(chain(*chunks), batch_size)
+            ]
+
+        # aggregate to document level
         embed = torch.cat(results, dim=0) # combine batches
         means = normalize(torch.stack([
             embed[i:j,:].mean(dim=0) for i, j in bounds

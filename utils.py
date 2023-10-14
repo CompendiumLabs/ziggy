@@ -29,11 +29,11 @@ def allow_list(func):
     return wrapper
 
 # group tuples by `idx` element, preserving other orders
-def groupby_dict(tups, idx=0):
-    getter = itemgetter(idx)
-    tups = sorted(tups, key=getter)
+def groupby_dict(vals, grps):
+    getter = itemgetter(1)
+    tups = sorted(zip(vals, grps), key=getter)
     return {
-        i: [k for _, k in j] for i, j in groupby(tups, key=getter)
+        k: [i for i, _ in v] for k, v in groupby(tups, key=getter)
     }
 
 # cumulative sum

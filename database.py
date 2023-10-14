@@ -144,11 +144,12 @@ class DocumentDatabase:
         # search document index
         docs = self.dindex.search(qvec, kd, return_simil=False) if self.dindex is not None else None
         labs, sims = self.cindex.search(qvec, kc, groups=docs)
-        match = list(zip(labs, sims.tolist()))
+        docs, idxs = zip(*[l for l, v in zip(labs, sims.tolist()) if v > cutoff])
 
         # group by document and filter by cutoff
-        locs = groupby_dict([l for l, v in match if v > cutoff])
-        text = {k: [self.chunks[k][i] for i in v] for k, v in locs.items()}
+        text = {
+            k: [self.chunks[k][i] for i in v] for k, v in groupby_dict(idxs, docs).items()
+        }
 
         # return text
         return text

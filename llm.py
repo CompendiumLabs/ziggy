@@ -94,7 +94,7 @@ class HuggingfaceModel:
             model, output_hidden_states=True, pretraining_tp=1, token=True
         )
         self.model = AutoModelForCausalLM.from_pretrained(
-            model, trust_remote_code=True, token=True, config=self.modconf,
+            model, trust_remote_code=True, config=self.modconf,
             device_map=device, **bitargs, **kwargs
         )
 

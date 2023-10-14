@@ -57,6 +57,11 @@ class TorchVectorIndex:
             resize_alloc(self.groups, size)
 
     def add(self, labs, vecs, groups=None, strict=False):
+        # allow for single vec
+        if type(labs) is not list and vecs.ndim == 1:
+            labs = [labs]
+            vecs = vecs.unsqueeze(0)
+
         # ensure on device
         vecs = vecs.to(self.device)
 
@@ -183,6 +188,12 @@ class TorchVectorIndex:
 
         # return labels/simils
         return (klab, kval) if return_simil else klab
+
+    def simil(self, vecs, mask=None):
+        mask = self.size() if mask is None else mask
+        vecs = torch.atleast_2d(vecs)
+        sims = self.values.similarity(vecs, mask=mask)
+        return sims.squeeze()
 
 ##
 ## FAISS

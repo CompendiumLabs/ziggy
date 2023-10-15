@@ -25,17 +25,20 @@ class ContextAgent:
         self.data = data
 
     def query(
-        self, query, context=2048, maxlen=2048,
-        system=DEFAULT_SYSTEM_PROMPT, instruct=DEFAULT_INSTRUCTIONS, **kwargs
+        self, prompt, query=None, system=DEFAULT_SYSTEM_PROMPT, instruct=DEFAULT_INSTRUCTIONS,
+        pretext=None, context=2048, maxlen=2048, **kwargs
     ):
+        # context query is prompt by default
+        query = query if query is not None else prompt
+
         # search db and get some context
-        matches = self.data.search(query, **kwargs)
-        chunks = {k: '; '.join(v) for k, v in matches.items()}
-        notes = '\n'.join([f'{k}: {v}' for k, v in chunks.items()])
+        if pretext is None:
+            matches = self.data.search(query, **kwargs)
+            pretext = '\n'.join([f'{k}: {v}' for k, v in matches.items()])
 
         # construct prompt
         chat = f'{system}\n\n{instruct}'
-        user = f'TEXT:\n{notes}\n\nQUERY: {query}'
+        user = f'Text:\n{pretext}\n\nQuery: {prompt}'
 
         # generate response
         yield from self.model.generate(user, chat=chat, context=context, maxlen=maxlen)
@@ -48,87 +51,164 @@ class ContextAgent:
 ## multi-shot agent with context and history
 ##
 
+def slice_to_indices(slc, size):
+    # fill in default values
+    start = slc.start if slc.start is not None else 0
+    stop = slc.stop if slc.stop is not None else size
+    step = slc.step if slc.step is not None else 1
+
+    # handle negative indexing
+    start = start + size if start < 0 else start
+    end = stop + size if stop < 0 else stop
+
+    # clamp indices
+    start = max(0, start)
+    end = min(size, end)
+
+    # return iterator
+    return list(range(start, stop, step))
+
+# addressing goes backward, like in a stack
+class FiniteList:
+    def __init__(self, maxlen):
+        self.max = maxlen
+        self.pos = 0
+        self.data = []
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        if type(idx) is slice:
+            idx = slice_to_indices(idx, len(self))
+        if type(idx) is list:
+            return [self[i] for i in idx]
+        size = len(self)
+        if idx >= size or idx < -size:
+            raise IndexError(f'Index {idx} out of range.')
+        pos = (self.pos - 1 - idx) % size
+        return self.data[pos]
+
+    def empty(self):
+        return len(self) == 0
+
+    def full(self):
+        return len(self) == self.max
+
+    def values(self):
+        if self.empty():
+            return []
+        elif self.full():
+            return self.data[self.pos-1::-1] + self.data[:self.pos:-1]
+        else:
+            return self.data[self.pos-1::-1]
+
+    def append(self, item):
+        if len(self) < self.max:
+            self.data.append(item)
+        else:
+            self.data[self.pos] = item
+        self.pos = (self.pos + 1) % self.max
+
 class HistoryDatabase:
     def __init__(self, embed, maxlen=2048, device='cuda'):
         self.embed = embed
         self.max = maxlen
 
         # data storage
-        self.txt = [None] * maxlen
+        self.txt = FiniteList(maxlen) # (meta, text)
         self.age = -torch.ones(maxlen, device=embed.device)
         self.idx = TorchVectorIndex(self.embed.dims, size=maxlen, device=device)
 
-        # current state
-        self.size = 0
-        self.pos = 0
+    def __len__(self):
+        return len(self.txt)
 
-    def add(self, txt, age=0):
-        # update metadata
-        self.txt[self.pos] = txt
-        self.age[self.pos] = 0
+    def __getitem__(self, idx):
+        return self.txt[idx]
 
-        # update embedding
+    def append(self, txt, meta=None, age=0):
+        # compute embedding
         emb = self.embed.embed(txt).squeeze()
-        self.idx.add(self.pos, emb)
 
-        # increment position
-        self.size += 1
-        self.pos = (self.pos + 1) % self.max
+        # update all data
+        self.age[self.txt.pos] = 0
+        self.idx.add(self.txt.pos, emb)
+        self.txt.append((meta, txt)) # this increments pos
 
     def step(self):
         self.age += (self.age >= 0)
 
-    def search(self, query, k=5, disc=0.2, group=True):
+    def search(self, query, k=5, disc=0.2, cutoff=0.0):
         # if we're empty
-        if self.size == 0:
-            return {} if group else []
+        if (size := len(self)) == 0:
+            return []
+
+        # handle generalized discounting
+        if type(disc) is float:
+            disco = lambda a: torch.exp(-disc*a)
+        else:
+            disco = disc
 
         # age weight similarities
         emb = self.embed.embed(query)
         age = self.age[self.age >= 0]
         sim0 = self.idx.simil(emb)
-        sim = torch.exp(-disc*age)*sim0
+        sim = disco(age)*sim0
 
         # return top-k matches
-        k1 = min(k, self.size)
-        tops = sim.topk(k1)
-        txts = [self.txt[i] for i in tops.indices]
-        ages = [self.age[i].item() for i in tops.indices]
+        tops = sim.topk(min(k, size))
+        matches = zip(tops.indices, tops.values.tolist())
+        idxs = [i for i, s in matches if s > cutoff]
 
-        # group by age and return
-        if group:
-            return groupby_dict(txts, ages)
-        else:
-            return txts
+        # return meta and text
+        return self.txt[idxs]
 
 class HistoryAgent(ContextAgent):
     def __init__(self, model, embed, maxlen=2048, device='cuda'):
         data = HistoryDatabase(embed, maxlen=maxlen, device=device)
         super().__init__(model, embed, data)
 
-    def add_history(self, txt):
-        self.data.add(txt)
+    def append_history(self, txt):
+        self.data.append(txt)
 
     def step_history(self):
         self.data.step()
 
 class Conversation:
-    def __init__(self, agents):
+    def __init__(self, agents, embed):
+        self.pop = len(agents)
         self.agents = agents
+        self.history = HistoryDatabase(embed)
 
-    def turn(self, agent):
+    def turn(self, agent, maxresp=256, **kwargs):
         # generate response
         ag = self.agents[agent]
         name = agent.upper()
 
         # set up full query
-        system = f'You are simulating a fictional adult character named {agent}. You are in face-to-face conversation with other fictional characters. Do not break character or refer to yourself in the third person. When you are asked for a response, you should reply as the character would. Avoid shouting and typing in all caps. You do not need to introduce yourself or say hello to your conversation partners. You can assume that the other characters know who you are and have talked to you before.'
+        system = f'You are simulating a fictional character named {agent}. You are in face-to-face conversation with other fictional characters. Do not break character or refer to yourself in the third person. When you are asked for a response, you should reply as the character would. Try to introduce novel concepts into the conversation every so often rather than just restating what has been said previously. Avoid shouting and typing in all caps and use of emojis. You do not need to introduce yourself or say hello to your conversation partners. You can assume that the other characters know who you are and have talked to you before. Keep your message short, a few sentences at most. You do not need to print your name or the name of your conversation partners at the beginning or end of the message.'
         instruct = f'Using a synthesis of your general knowledge and the previous messages given below, provide a response from {agent}.'
-        prompt = f''
+        chat = f'{system}\n\n{instruct}'
+
+        # discount from last period for query
+        disc = lambda a: torch.where(a > 0, torch.exp(-0.2*(a-1)), 0.0)
+
+        # search db and get some context
+        if len(self.history) == 0:
+            pretext = 'This is the beginning of the conversation.'
+        else:
+            window = max(0, self.pop - 1)
+            previous = self.history[:window]
+            query = '\n'.join([f'{a}: {t}' for a, t in previous])
+            matches = self.history.search(query, disc=disc, **kwargs)
+            pretext = '\n'.join([f'{k}: {v}' for k, v in (matches+previous)])
+
+        # generate response
+        resp = ag.model.generate(pretext, chat=chat, maxlen=maxresp)
 
         # generate reponse and print
-        print(f'AGENT {agent.upper()}:')
-        resp = ''.join(tee(ag.query(prompt, system=system, instruct=instruct)))
+        print(agent.upper())
+        resp = ''.join(tee(resp))
         print()
 
         # update histories
@@ -136,22 +216,21 @@ class Conversation:
             if agent1 == agent:
                 continue
             message = f'Message from {agent}: {resp}'
-            self.agents[agent1].add_history(message)
+            self.agents[agent1].append_history(message)
 
-    def step(self, agent):
-        ag = self.agents[agent]
-        ag.step_history()
+        # update history
+        self.history.append(resp, meta=agent)
 
-    def round(self, randomize=True):
-        # get order
-        order = list(self.agents)
-        if randomize:
-            shuffle(order)
-
-        # step through agents
-        for agent in order:
-            self.turn(agent)
+    def round(self, **kwargs):
+        # cycle through agents
+        for agent in self.agents:
+            self.turn(agent, **kwargs)
+            print()
 
         # step history forward
-        for agent in self.agents:
-            self.step(agent)
+        for ag in self.agents.values():
+            ag.step_history()
+
+    def run(self, nrounds, **kwargs):
+        for _ in range(nrounds):
+            self.round(**kwargs)

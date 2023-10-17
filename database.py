@@ -45,7 +45,7 @@ def stream_jsonl(path, maxrows=None):
 # index: TorchVectorIndex {(name, chunk_idx): vec}
 class DocumentDatabase:
     def __init__(
-            self, embed=DEFAULT_EMBED, delim='\n{2,}', minlen=1, batch_size=1024,
+            self, embed=DEFAULT_EMBED, delim='\n{2,}', minlen=1, batch_size=4096,
             model_device='cuda', index_device='cuda', doc_index=True, allocate=True,
             qspec=Float, **kwargs
         ):
@@ -65,14 +65,14 @@ class DocumentDatabase:
     @classmethod
     def from_jsonl(
         cls, path, name_col='title', text_col='text', doc_batch=1024, maxrows=None,
-        progress=True, batch_size=128, threaded=True, **kwargs
+        progress=True, threaded=True, **kwargs
     ):
         self = cls(**kwargs)
         lines = stream_jsonl(path, maxrows=maxrows)
         for batch in batch_generator(lines, doc_batch):
             self.index_docs([
                 (row[name_col], row[text_col]) for row in batch
-            ], batch_size=batch_size, threaded=threaded)
+            ], threaded=threaded)
             if progress:
                 print('█', end='', flush=True)
         return self

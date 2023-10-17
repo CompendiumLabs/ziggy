@@ -10,7 +10,7 @@ from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM, AutoCon
 from sentence_transformers import SentenceTransformer
 from llama_cpp import Llama
 
-from utils import pipeline_threads, batch_generator, cumul_bounds, sprint
+from utils import pipeline_threads, batch_generator, cumsum, cumul_bounds, sprint
 
 ##
 ## Constants
@@ -198,7 +198,7 @@ except:
     print('ONNX not available.')
 
 class HuggingfaceEmbedding:
-    def __init__(self, model_id=DEFAULT_EMBED, save_dir='onnx', device='cuda', onnx=False, compile=False):
+    def __init__(self, model_id=DEFAULT_EMBED, maxlen=None, batch_size=128, save_dir='onnx', device='cuda', onnx=False, compile=False):
         # runtime options
         self.device = device
 
@@ -228,13 +228,18 @@ class HuggingfaceEmbedding:
         self.model = ModelConstructor(model_path).to(device)
 
         # get model info
-        self.maxlen = self.model.config.max_position_embeddings
+        self.batch_size = batch_size
+        self.maxlen = self.model.config.max_position_embeddings if maxlen is None else maxlen
         self.dims = self.model.config.hidden_size
 
-    def tokenize_batch(self, text, **kwargs):
-        targs = {'padding': True, 'truncation': True, **kwargs}
+    def tokenize_batch(self, text, maxlen=None, **kwargs):
+        maxlen = maxlen if maxlen is not None else self.maxlen
+        targs = {
+            'padding': 'max_length', 'truncation': True, 'max_length': maxlen,
+            'return_overflowing_tokens': True, **kwargs
+        }
         encode = self.tokenizer(text, return_tensors='pt', **targs)
-        return encode['input_ids'], encode['attention_mask']
+        return encode.overflow_to_sample_mapping, encode.input_ids, encode.attention_mask
 
     def forward_batch(self, input_ids, attention_mask):
         # prepare model inputs on device
@@ -256,41 +261,49 @@ class HuggingfaceEmbedding:
         return normalize(embed, dim=-1)
 
     def embed_batch(self, text, **kwargs):
-        input_ids, attention_mask = self.tokenize_batch(text, **kwargs)
-        return self.forward_batch(input_ids, attention_mask)
+        doc_indices, input_ids, attention_mask = self.tokenize_batch(text, **kwargs)
+        embed = self.forward_batch(input_ids, attention_mask)
+        return doc_indices, embed
 
-    def embed(self, text, maxlen=None, batch_size=128, threaded=True):
+    def embed(self, text, maxlen=None, batch_size=None, queue_size=256, threaded=False):
+        batch_size = batch_size if batch_size is not None else self.batch_size
+
         # handle unit case
         if type(text) is str:
             text = [text]
-
-        # split into chunks and embed
-        maxlen = maxlen if maxlen is not None else self.maxlen
-        chunks = [length_splitter(t, maxlen) for t in text]
-        bounds = cumul_bounds([len(c) for c in chunks])
 
         if threaded:
             # make workers
             results = []
             def loader():
-                yield from batch_generator(chain(*chunks), batch_size)
+                yield from batch_generator(iter(text), batch_size)
             def tokenizer(texts):
-                return self.tokenize_batch(texts)
+                return self.tokenize_batch(texts, maxlen=maxlen)
             def forwarder(data):
-                results.append(self.forward_batch(*data))
+                doc_indices, input_ids, attention_mask = data
+                embed = self.forward_batch(input_ids, attention_mask)
+                results.append((doc_indices, embed))
 
             # embed chunks and average
-            pipeline_threads(loader(), tokenizer, forwarder, maxsize=256)
+            pipeline_threads(loader(), tokenizer, forwarder, maxsize=queue_size)
         else:
             # embed chunks and average
             results = [
-                self.embed_batch(chunk) for chunk in batch_generator(chain(*chunks), batch_size)
+                self.embed_batch(chunk) for chunk in batch_generator(iter(text), batch_size)
             ]
 
+        # unpack offsets and embeds
+        offsets, embeds = zip(*results)
+
+        # document offsets come zero-indexed within batch
+        nchunks = [o.max().item()+1 for o in offsets]
+        indices = torch.cat([o+n for o, n in zip(offsets, cumsum(nchunks))])
+        _, sizes = torch.unique(indices, return_counts=True)
+
         # aggregate to document level
-        embed = torch.cat(results, dim=0) # combine batches
+        embed = torch.cat(embeds, dim=0)
         means = normalize(torch.stack([
-            embed[i:j,:].mean(dim=0) for i, j in bounds
+            embed[i:j,:].mean(dim=0) for i, j in cumul_bounds(sizes)
         ], dim=0), dim=-1)
 
         # return normalized vectors

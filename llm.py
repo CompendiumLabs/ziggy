@@ -193,7 +193,10 @@ class LlamaCppModel:
 ##
 
 class HuggingfaceEmbedding:
-    def __init__(self, model_id=DEFAULT_EMBED, maxlen=None, batch_size=128, save_dir='onnx', device='cuda', onnx=False, compile=False):
+    def __init__(
+        self, model_id=DEFAULT_EMBED, maxlen=None, batch_size=128, device='cuda',
+        dtype=torch.float16, onnx=False, save_dir='onnx', compile=False
+    ):
         from optimum.onnxruntime import ORTModelForFeatureExtraction, ORTOptimizer
         from optimum.onnxruntime.configuration import OptimizationConfig
 
@@ -230,14 +233,12 @@ class HuggingfaceEmbedding:
         self.maxlen = self.model.config.max_position_embeddings if maxlen is None else maxlen
         self.dims = self.model.config.hidden_size
 
-    def tokenize_batch(self, text, maxlen=None, **kwargs):
+    def tokenize_batch(self, text, maxlen=None, clip=False, **kwargs):
         maxlen = maxlen if maxlen is not None else self.maxlen
-        targs = {
-            'padding': 'max_length', 'truncation': True, 'max_length': maxlen,
-            'return_overflowing_tokens': True, **kwargs
-        }
-        encode = self.tokenizer(text, return_tensors='pt', **targs)
-        return encode.overflow_to_sample_mapping, encode.input_ids, encode.attention_mask
+        targs = dict(padding='max_length', truncation=True, return_overflowing_tokens=not clip, **kwargs)
+        encode = self.tokenizer(text, max_length=maxlen, return_tensors='pt', **targs)
+        overflow_mapping = torch.arange(len(text), dtype=torch.int64) if clip else encode.overflow_to_sample_mapping
+        return overflow_mapping, encode.input_ids, encode.attention_mask
 
     def forward_batch(self, input_ids, attention_mask):
         # prepare model inputs on device
@@ -263,7 +264,7 @@ class HuggingfaceEmbedding:
         embed = self.forward_batch(input_ids, attention_mask)
         return doc_indices, embed
 
-    def embed(self, text, maxlen=None, batch_size=None, queue_size=256, threaded=False):
+    def embed(self, text, maxlen=None, clip=False, batch_size=None, queue_size=256, threaded=False):
         batch_size = batch_size if batch_size is not None else self.batch_size
 
         # handle unit case
@@ -276,7 +277,7 @@ class HuggingfaceEmbedding:
             def loader():
                 yield from batch_generator(iter(text), batch_size)
             def tokenizer(texts):
-                return self.tokenize_batch(texts, maxlen=maxlen)
+                return self.tokenize_batch(texts, maxlen=maxlen, clip=clip)
             def forwarder(data):
                 doc_indices, input_ids, attention_mask = data
                 embed = self.forward_batch(input_ids, attention_mask)

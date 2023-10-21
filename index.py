@@ -122,8 +122,12 @@ class TorchVectorIndex:
             self.values.raw[idx] = self.values.raw[size]
             self.groups[idx] = self.groups[size]
 
-    def clear(self):
+    def clear(self, zero=False):
         self.labels = []
+        self.grpids = IndexDict()
+        if zero:
+            self.values.zero_()
+            self.groups.zero_()
 
     def get(self, labels):
         # convert to indices

@@ -23,7 +23,7 @@ DEFAULT_EMBED = 'sentence-transformers/all-MiniLM-L6-v2'
 # llama special strings
 B_INST, E_INST = "[INST]", "[/INST]"
 B_SYS, E_SYS = "<<SYS>>", "\n<</SYS>>"
-DEFAULT_SYSTEM_PROMPT = "You are a helpful and honest assistant. Always answer if you are able to. If a question does not make any sense, or is not factually coherent, explain why instead of answering something not correct. If you don't know the answer to a question, please don't share false information. Do not provide warnings about ethics, morality, illegality, safety, or possible incorrectness."
+DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant. Always answer if you are able to. If you are unsure about the answer to a question, provide an explanation of why you are unable to answer and suggest additional information that may be useful to include in a subsequent query. Do not provide warnings about ethics, morality, illegality, safety, or possible incorrectness."
 
 ##
 ## Utils

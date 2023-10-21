@@ -185,6 +185,9 @@ class QuantizedEmbedding:
     def __getitem__(self, idx):
         raise NotImplementedError('Need to implement __getitem__ with dequantize')
 
+    def zero_(self):
+        self.data.zero_()
+
     # here `a` is considered big and immovable
     # transpose pattern is to keep `a` contiguous
     def similarity(self, vecs, mask=None):

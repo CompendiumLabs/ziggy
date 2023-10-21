@@ -4,11 +4,13 @@ import os
 import re
 import json
 import torch
+import mimetypes
 
 from math import ceil, inf
 from itertools import chain, islice
 from pathlib import Path
 from torch.nn.functional import normalize
+from pypdf import PdfReader
 
 from llm import DEFAULT_EMBED, HuggingfaceEmbedding
 from index import TorchVectorIndex
@@ -28,9 +30,16 @@ def paragraph_splitter(text, delim='\n{2,}', minlen=1):
     return [para for para in paras if len(para) >= minlen]
 
 # robust text reader (for encoding errors)
-def robust_read(path):
+def read_text(path):
     with open(path, 'r', errors='ignore') as fid:
         return fid.read()
+
+# read a pdf file in text
+def read_pdf(path):
+    reader = PdfReader(path)
+    return '\n\n'.join([
+        page.extract_text() for page in reader.pages
+    ])
 
 # generate loader for jsonl file
 def stream_jsonl(path, maxrows=None):
@@ -40,9 +49,14 @@ def stream_jsonl(path, maxrows=None):
                 break
             yield json.loads(line)
 
+##
+## generic document database
+##
+
 # data storage:
 # chunks: dict {name: [chunk1, chunk2, ...]}
-# index: TorchVectorIndex {(name, chunk_idx): vec}
+# cindex: TorchVectorIndex {(name, chunk_idx): vec}
+# dindex: TorchVectorIndex {name: vec}
 class DocumentDatabase:
     def __init__(
             self, embed=DEFAULT_EMBED, delim='\n{2,}', minlen=1, batch_size=4096,
@@ -137,6 +151,22 @@ class DocumentDatabase:
         chunks = self.process_docs(texts)
         self.index_chunks(chunks, **kwargs)
 
+    def remove_docs(self, names):
+        # remove from chunk dict
+        for name in names:
+            del self.chunks[name]
+
+        # remove from index
+        self.cindex.remove(func=lambda x: x[0] in names)
+        if self.dindex is not None:
+            self.dindex.remove(labs=names)
+
+    def clear(self, zero=False):
+        self.chunks = {}
+        self.cindex.clear(zero=zero)
+        if self.dindex is not None:
+            self.dindex.clear(zero=zero)
+
     def search(self, query, kd=25, kc=10, cutoff=-torch.inf):
         # embed query string
         qvec = self.embed.embed(query).squeeze()
@@ -144,15 +174,43 @@ class DocumentDatabase:
         # search document index
         docs = self.dindex.search(qvec, kd, return_simil=False) if self.dindex is not None else None
         labs, sims = self.cindex.search(qvec, kc, groups=docs)
-        docs, idxs = zip(*[l for l, v in zip(labs, sims.tolist()) if v > cutoff])
+        match = [l for l, v in zip(labs, sims.tolist()) if v > cutoff]
+
+        # return if no good matches
+        if len(match) == 0:
+            return {}
 
         # group by document and filter by cutoff
+        docs, idxs = zip(*match)
         text = {
             k: [self.chunks[k][i] for i in v] for k, v in groupby_dict(idxs, docs).items()
         }
 
         # return text
         return text
+
+##
+## filesystem interface
+##
+
+# this relies solely on the extension
+def load_document(path):
+    # null on non-existent or directory
+    if not os.path.exists(path) or os.path.isdir(path):
+        return None
+
+    # get extension and mimetype
+    name, direc = os.path.split(path)
+    base, ext = os.path.splitext(name)
+    ext = ext.lstrip('.')
+    mime, _ = mimetypes.guess_type(path)
+    mtype = mime.split('/')[0] if mime is not None else None
+
+    # dispatch to readers
+    if mime == 'application/pdf':
+        return read_pdf(path)
+    elif mtype == 'text' or mtype is None:
+        return read_text(path)
 
 # index documents in a specified directory
 class FilesystemDatabase(DocumentDatabase):
@@ -177,18 +235,17 @@ class FilesystemDatabase(DocumentDatabase):
         return os.path.getmtime(self.path / name)
 
     def get_text(self, name):
-        return robust_read(self.path / name)
-
-    def clear(self, names=None):
-        names = self.get_names() if names is None else names
-        self.cindex.remove(func=lambda x: x[0] in names)
-        self.dindex.remove(labs=names)
+        return load_document(self.path / name)
 
     def reindex(self, names=None):
-        names = self.get_names() if names is None else names
-        self.clear(names=names)
+        if names is None:
+            names = self.get_names()
+            self.clear()
+        else:
+            self.remove_docs(names=names)
         self.times = {n: self.get_mtime(n) for n in names}
-        self.index_docs((n, self.get_text(n)) for n in names)
+        texts = [(n, self.get_text(n)) for n in names]
+        self.index_docs([(n, t) for n, t in texts if t is not None])
 
     def refresh(self, names=None):
         names = self.get_names() if names is None else names

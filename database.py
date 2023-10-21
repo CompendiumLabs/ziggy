@@ -79,14 +79,14 @@ class DocumentDatabase:
     @classmethod
     def from_jsonl(
         cls, path, name_col='title', text_col='text', doc_batch=1024, maxrows=None,
-        progress=True, threaded=True, **kwargs
+        progress=True, maxlen=None, threaded=True, **kwargs
     ):
         self = cls(**kwargs)
         lines = stream_jsonl(path, maxrows=maxrows)
         for batch in batch_generator(lines, doc_batch):
             self.index_docs([
                 (row[name_col], row[text_col]) for row in batch
-            ], threaded=threaded)
+            ], maxlen=maxlen, threaded=threaded)
             if progress:
                 print('█', end='', flush=True)
         return self

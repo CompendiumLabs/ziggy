@@ -15,6 +15,13 @@ import toml
 def sprint(s):
     print(s, end='', flush=True)
 
+# print iterator while streaming
+def tee(iterable):
+    for item in iterable:
+        sprint(item)
+        yield item
+
+# mostly for reallocations
 def next_power_of_2(x):
     return pow(2, round(ceil(log2(x))))
 

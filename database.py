@@ -10,7 +10,6 @@ from math import ceil, inf
 from itertools import chain, islice
 from pathlib import Path
 from torch.nn.functional import normalize
-from pypdf import PdfReader
 
 from llm import DEFAULT_EMBED, HuggingfaceEmbedding
 from index import TorchVectorIndex
@@ -36,6 +35,7 @@ def read_text(path):
 
 # read a pdf file in text
 def read_pdf(path):
+    from pypdf import PdfReader
     reader = PdfReader(path)
     return '\n\n'.join([
         page.extract_text() for page in reader.pages

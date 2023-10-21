@@ -1,6 +1,5 @@
 # vector index
 
-import faiss
 import torch
 
 from quant import QuantizedEmbedding, Float, Half
@@ -206,6 +205,9 @@ class TorchVectorIndex:
 # this won't handle deletion
 class FaissIndex:
     def __init__(self, dims, spec='Flat', device='cuda'):
+        import faiss
+
+        # initialize index
         self.dims = dims
         self.labels = []
         self.values = faiss.index_factory(dims, spec)

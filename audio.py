@@ -3,7 +3,6 @@
 import re
 import time
 import torch
-import whisper
 import sounddevice as sd
 
 from tqdm import tqdm
@@ -37,6 +36,9 @@ def timer_bar(seconds, tick=0.01, jiffy=0.001, **kwargs):
 
 class WhisperModel:
     def __init__(self, model='large', device='cuda'):
+        import whisper
+
+        # load pretrained model
         self.model = whisper.load_model(model, device=device)
 
     def transcribe(self, source=None, duration=None):

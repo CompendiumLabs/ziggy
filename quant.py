@@ -1,8 +1,8 @@
 # handle quantized embedding matrices
 
 from typing import Any
-import torch
 from enum import Enum
+import torch
 
 from utils import resize_alloc
 

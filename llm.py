@@ -1,14 +1,12 @@
 ## LLM generation and embeddings
 
+import os
 from math import ceil
 from itertools import chain
-import os
-import torch
 
+import torch
 from torch.nn.functional import normalize
 from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM, AutoConfig
-from sentence_transformers import SentenceTransformer
-from llama_cpp import Llama
 
 from utils import pipeline_threads, batch_generator, cumsum, cumul_bounds, sprint
 
@@ -164,6 +162,9 @@ class HuggingfaceModel:
 # NOTE: llama2-70b needs n_gqa=8
 class LlamaCppModel:
     def __init__(self, model_path, context=2048, n_gpu_layers=100, verbose=False, **kwargs):
+        from llama_cpp import Llama
+
+        # load llama model
         self.model = Llama(
             model_path, n_ctx=context, n_gpu_layers=n_gpu_layers, verbose=verbose, **kwargs
         )
@@ -191,14 +192,11 @@ class LlamaCppModel:
 ## Embeddings
 ##
 
-try:
-    from optimum.onnxruntime import ORTModelForFeatureExtraction, ORTOptimizer
-    from optimum.onnxruntime.configuration import OptimizationConfig
-except:
-    print('ONNX not available.')
-
 class HuggingfaceEmbedding:
     def __init__(self, model_id=DEFAULT_EMBED, maxlen=None, batch_size=128, save_dir='onnx', device='cuda', onnx=False, compile=False):
+        from optimum.onnxruntime import ORTModelForFeatureExtraction, ORTOptimizer
+        from optimum.onnxruntime.configuration import OptimizationConfig
+
         # runtime options
         self.device = device
 
@@ -313,17 +311,14 @@ class HuggingfaceEmbedding:
 ## meta seamless model
 ##
 
-try:
-    from seamless_communication.models.inference import Translator
-    import onnxruntime as ort
-except:
-    print('Seamless not available.')
-
 class SeamlessModel:
     def __init__(
             self, model_size='large', vocoder='vocoder_36langs', device='cuda', lang='eng',
             onnx=False, save_dir='onnx/seamless'
         ):
+        from seamless_communication.models.inference import Translator
+        import onnxruntime as ort
+
         # options
         self.device = device
         self.lang = lang

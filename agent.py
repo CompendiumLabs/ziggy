@@ -5,12 +5,7 @@ from random import shuffle
 
 from llm import sprint, DEFAULT_SYSTEM_PROMPT
 from index import TorchVectorIndex
-from utils import sprint, groupby_dict
-
-def tee(iterable):
-    for item in iterable:
-        sprint(item)
-        yield item
+from utils import sprint, tee, groupby_dict
 
 ##
 ## simple one-shot agent with context

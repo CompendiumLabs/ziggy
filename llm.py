@@ -206,18 +206,19 @@ class HuggingfaceEmbedding:
         # load params
         if onnx:
             ModelConstructor = ORTModelForFeatureExtraction.from_pretrained
-            model_path = os.path.join(save_dir, model_id)
+            model_path = os.path.join(save_dir, f'{model_id}-{device}')
         else:
             ModelConstructor = AutoModel.from_pretrained
             model_path = model_id
 
         # compile if needed
-        if onnx and (compile or not os.path.isdir(model_id)):
+        if onnx and (compile or not os.path.isdir(model_path)):
+            optim_args = dict(optimize_for_gpu=True, fp16=True) if device == 'cuda' else {}
             model = ORTModelForFeatureExtraction.from_pretrained(
                 model_id, export=True
             )
             optimization_config = OptimizationConfig(
-                optimization_level=99, optimize_for_gpu=True, fp16=True
+                optimization_level=99, **optim_args
             )
             optimizer = ORTOptimizer.from_pretrained(model)
             optimizer.optimize(

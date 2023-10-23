@@ -3,7 +3,7 @@
 import torch
 
 from quant import QuantizedEmbedding, Float, Half
-from utils import IndexDict, resize_alloc, next_power_of_2
+from utils import IndexDict, OrderedSet, resize_alloc, next_power_of_2
 
 ##
 ## Pure Torch
@@ -23,7 +23,7 @@ class TorchVectorIndex:
                 qspec = Half if device == 'cuda' else Float
 
             # set up storage
-            self.labels = []
+            self.labels = OrderedSet()
             self.grpids = IndexDict()
             self.values = QuantizedEmbedding(size, dims, qspec=qspec, device=device)
             self.groups = torch.empty(size, device=self.device, dtype=torch.int32)
@@ -31,7 +31,7 @@ class TorchVectorIndex:
     @classmethod
     def load(cls, data, device='cuda', **kwargs):
         self = cls(allocate=False, device=device, **kwargs)
-        self.labels = data['labels']
+        self.labels = OrderedSet.load(data['labels'])
         self.grpids = IndexDict.load(data['grpids'])
         self.values = QuantizedEmbedding.load(data['values'], device=device)
         self.groups = data['groups']
@@ -39,7 +39,7 @@ class TorchVectorIndex:
 
     def save(self):
         return {
-            'labels': self.labels,
+            'labels': self.labels.save(),
             'grpids': self.grpids.save(),
             'values': self.values.save(),
             'groups': self.groups,
@@ -73,7 +73,7 @@ class TorchVectorIndex:
 
         # get breakdown of new vs old
         slabs = set(labs)
-        exist = slabs.intersection(self.labels)
+        exist = self.labels.intersection(slabs)
         novel = slabs - exist
 
         # raise if trying invalid strict add
@@ -115,14 +115,14 @@ class TorchVectorIndex:
     def remove(self, labs=None, func=None):
         size = self.size()
         labs = [l for l in self.labels if func(l)] if func is not None else labs
-        for lab in set(labs).intersection(self.labels):
+        for lab in self.labels.intersection(labs):
             idx = self.labels.index(lab)
             self.labels.pop(idx)
             self.values.raw[idx] = self.values.raw[size]
             self.groups[idx] = self.groups[size]
 
     def clear(self, zero=False):
-        self.labels = []
+        self.labels = OrderedSet()
         self.grpids = IndexDict()
         if zero:
             self.values.zero_()

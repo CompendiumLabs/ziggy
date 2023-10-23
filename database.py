@@ -61,7 +61,7 @@ class DocumentDatabase:
     def __init__(
             self, embed=DEFAULT_EMBED, delim='\n{2,}', minlen=1, batch_size=4096,
             model_device='cuda', index_device='cuda', doc_index=True, allocate=True,
-            qspec=Float, **kwargs
+            qspec=Float, dims=None, **kwargs
         ):
         # instantiate model and embedding
         self.embed = HuggingfaceEmbedding(embed, device=model_device) if type(embed) is str else embed
@@ -72,21 +72,22 @@ class DocumentDatabase:
 
         # initalize index
         if allocate:
+            dims = self.embed.dims if dims is None else dims
             self.chunks = {}
-            self.cindex = TorchVectorIndex(self.embed.dims, device=index_device, qspec=qspec, **kwargs)
-            self.dindex = TorchVectorIndex(self.embed.dims, device=index_device, qspec=qspec, **kwargs) if doc_index else None
+            self.cindex = TorchVectorIndex(dims, device=index_device, qspec=qspec, **kwargs)
+            self.dindex = TorchVectorIndex(dims, device=index_device, qspec=qspec, **kwargs) if doc_index else None
 
     @classmethod
     def from_jsonl(
         cls, path, name_col='title', text_col='text', doc_batch=1024, maxrows=None,
-        progress=True, maxlen=None, clip=False, threaded=True, **kwargs
+        progress=True, threaded=True, **kwargs
     ):
         self = cls(**kwargs)
         lines = stream_jsonl(path, maxrows=maxrows)
-        for batch in batch_generator(lines, doc_batch):
+        for i, batch in enumerate(batch_generator(lines, doc_batch)):
             self.index_docs([
                 (row[name_col], row[text_col]) for row in batch
-            ], maxlen=maxlen, clip=clip, threaded=threaded)
+            ], threaded=threaded)
             if progress:
                 print('█', end='', flush=True)
         return self
@@ -119,22 +120,27 @@ class DocumentDatabase:
         chunks = {k: v for k, v in chunks.items() if len(v) > 0}
         return chunks
 
-    def index_chunks(self, chunks, **kwargs):
-        # get names and labels
-        names = list(chunks)
-        labels = [(n, j) for n, c in chunks.items() for j in range(len(c))]
-        groups = [n for n, _ in labels]
-
+    def embed_chunks(self, chunks, threaded=True):
         # assess chunk information
-        chunk_sizes = [len(c) for c in chunks.values()]
-        nchunks = sum(chunk_sizes)
+        nchunks = sum([len(c) for c in chunks.values()])
         nbatch = int(ceil(nchunks/self.batch_size))
 
         # embed chunks with chosen batch_size
         chunk_iter = chain(*chunks.values())
         embeds = torch.cat([
-            self.embed.embed(list(islice(chunk_iter, self.batch_size)), **kwargs) for i in range(nbatch)
+            self.embed.embed(list(islice(chunk_iter, self.batch_size)), threaded=threaded) for _ in range(nbatch)
         ], dim=0)
+
+        return embeds
+
+    def index_embeds(self, chunks, embeds):
+        # assess chunk information
+        chunk_sizes = [len(c) for c in chunks.values()]
+        nchunks = sum(chunk_sizes)
+
+        # get names and labels
+        labels = [(n, j) for n, s in zip(chunks, chunk_sizes) for j in range(s)]
+        groups = [n for n, _ in labels]
 
         # update chunks and add to index
         self.chunks.update(chunks)
@@ -145,11 +151,12 @@ class DocumentDatabase:
             docemb = normalize(torch.stack([
                 embeds[i:j,:].mean(dim=0) for i, j in cumul_indices(chunk_sizes)
             ], dim=0), dim=-1)
-            self.dindex.add(names, docemb)
+            self.dindex.add(list(chunks), docemb)
 
-    def index_docs(self, texts, **kwargs):
+    def index_docs(self, texts, threaded=True):
         chunks = self.process_docs(texts)
-        self.index_chunks(chunks, **kwargs)
+        embeds = self.embed_chunks(chunks, threaded=threaded)
+        self.index_embeds(chunks, embeds)
 
     def remove_docs(self, names):
         # remove from chunk dict

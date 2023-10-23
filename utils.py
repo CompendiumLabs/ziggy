@@ -6,6 +6,7 @@ from operator import itemgetter
 from threading import Thread, Event
 from queue import Queue, Empty
 import toml
+import time
 
 ##
 ## pure play python
@@ -73,6 +74,10 @@ def cumul_indices(lengths):
 ##
 
 class IndexDict(dict):
+    def __init__(self, data=None):
+        data = [] if data is None else data
+        super().__init__(data)
+
     @classmethod
     def load(cls, data):
         return cls(data)
@@ -82,7 +87,8 @@ class IndexDict(dict):
 
     @allow_list
     def add(self, keys):
-        new = set(keys).difference(self)
+        skeys = set(keys)
+        new = skeys - (self.keys() & skeys)
         n0, n1 = len(self), len(new)
         ids = range(n0, n0 + n1)
         self.update(zip(new, ids))
@@ -90,6 +96,31 @@ class IndexDict(dict):
     @allow_list
     def idx(self, keys):
         return [self[k] for k in keys]
+
+class OrderedSet(list):
+    def __init__(self, data=None):
+        data = [] if data is None else data
+        super().__init__(data)
+        self._set = set(data)
+
+    @classmethod
+    def load(cls, data):
+        return cls(data)
+
+    def save(self):
+        return list(self)
+
+    def isdisjoint(self, keys):
+        return self._set.isdisjoint(keys)
+
+    def intersection(self, keys):
+        return self._set.intersection(keys)
+
+    def extend(self, keys):
+        if not self.isdisjoint(keys):
+            raise ValueError('Trying to add existing keys')
+        self._set.update(keys)
+        super().extend(keys)
 
 class Bundle(dict):
     def __init__(self, *args, **kwargs):
@@ -125,6 +156,52 @@ class Bundle(dict):
     
     def __setattr__(self, key, value):
         self[key] = value
+
+##
+## request tracking
+##
+
+class RequestTracker:
+    def __init__(self, limits, period):
+        self.reqs = []
+        self.lims = limits
+        self.span = period
+
+    def add(self, *req):
+        current = time.time()
+        self.reqs.append((current, req))
+
+    def ensure(self):
+        # trim request queue
+        current = time.time()
+        cutoff = current - self.span
+        self.reqs = [(t, n) for t, n in self.reqs if t >= cutoff]
+
+        # if empty we are good
+        if len(self.reqs) == 0:
+            return
+
+        # get the current in period totals
+        usage = tuple(map(list, zip(*[n for _, n in self.reqs])))
+        total = tuple(map(sum, usage))
+        print(f'usage = {total}')
+
+        # determine how long to wait for compliance
+        if any([t > l for t, l in zip(total, self.lims)]):
+            # get compliance cutoff for each series
+            cumuse = [cumsum(reversed(u)) for u in usage]
+            usecut = [
+                next((i for i, c in enumerate(cu) if c > l), 0)
+                for cu, l in zip(cumuse, self.lims)
+            ]
+
+            # compute delay to full compliance
+            cut, _ = self.reqs[len(self.reqs)-max(usecut)]
+            delay = self.span - (current-cut)
+
+            # implement delay and notify
+            print(f'waiting {delay:.2f} seconds for rate limit (usage = {total})')
+            time.sleep(delay)
 
 ##
 ## torch utils

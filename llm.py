@@ -198,6 +198,7 @@ class HuggingfaceEmbedding:
         self, model_id=DEFAULT_EMBED, maxlen=None, batch_size=128, queue_size=256,
         device='cuda', dtype=torch.float16, onnx=False, save_dir='onnx', compile=False
     ):
+        from onnxruntime import SessionOptions
         from optimum.onnxruntime import ORTModelForFeatureExtraction, ORTOptimizer
         from optimum.onnxruntime.configuration import OptimizationConfig
 
@@ -205,31 +206,34 @@ class HuggingfaceEmbedding:
         self.device = device
         self.queue_size = queue_size
 
-        # load params
-        if onnx:
-            ModelConstructor = ORTModelForFeatureExtraction.from_pretrained
-            model_path = os.path.join(save_dir, f'{model_id}-{device}')
-        else:
-            ModelConstructor = AutoModel.from_pretrained
-            model_path = model_id
-
-        # compile if needed
-        if onnx and (compile or not os.path.isdir(model_path)):
-            optim_args = dict(optimize_for_gpu=True, fp16=True) if device == 'cuda' else {}
-            model = ORTModelForFeatureExtraction.from_pretrained(
-                model_id, export=True
-            )
-            optimization_config = OptimizationConfig(
-                optimization_level=99, **optim_args
-            )
-            optimizer = ORTOptimizer.from_pretrained(model)
-            optimizer.optimize(
-                save_dir=model_path, optimization_config=optimization_config
-            )
+        # load tokenizer
+        self.tokenizer = AutoTokenizer.from_pretrained(model_id)
 
         # load model
-        self.tokenizer = AutoTokenizer.from_pretrained(model_id)
-        self.model = ModelConstructor(model_path).to(device)
+        if onnx:
+            model_path = os.path.join(save_dir, f'{model_id}-{device}')
+
+            # compile if needed
+            if compile or not os.path.isdir(model_path):
+                optim_args = dict(optimize_for_gpu=True, fp16=True) if device == 'cuda' else {}
+                model = ORTModelForFeatureExtraction.from_pretrained(
+                    model_id, export=True
+                )
+                optimization_config = OptimizationConfig(
+                    optimization_level=99, **optim_args
+                )
+                optimizer = ORTOptimizer.from_pretrained(model)
+                optimizer.optimize(
+                    save_dir=model_path, optimization_config=optimization_config
+                )
+
+            provider = 'CUDAExecutionProvider' if device == 'cuda' else 'CPUExecutionProvider'
+            provider_options = {'arena_extend_strategy': 'kSameAsRequested'}
+            self.model = ORTModelForFeatureExtraction.from_pretrained(
+                model_path, provider=provider, provider_options=provider_options
+            )
+        else:
+            self.model = AutoModel.from_pretrained(model_id)
 
         # get model info
         self.batch_size = batch_size

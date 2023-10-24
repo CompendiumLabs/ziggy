@@ -34,12 +34,31 @@ void test_pack_cuda() {
   Tensor a = torch::ones({n, dim}, at::device(torch::kCUDA).dtype(torch::kFloat));
   Tensor qa = quantize_and_pack_cuda(a, bits, scale, zero_point);
 
-  std::cout << a.sizes() << " | " << a.mean() << std::endl;
+  std::cout << a.sizes() << std::endl << a << std::endl;
   std::cout << qa.sizes() << std::endl << qa << std::endl;
+}
+
+void test_unpack_cuda() {
+  int64_t dim = 8;
+  int64_t n = 4;
+
+  unsigned int bits = 4;
+  float scale = 1.0f;
+  float zero_point = 7.0f;
+
+  Tensor a = torch::ones({n, dim}, at::device(torch::kCUDA).dtype(torch::kFloat));
+  Tensor qa = quantize_and_pack_cuda(a, bits, scale, zero_point);
+  Tensor a1 = dequantize_and_unpack_cuda(qa, torch::kFloat, bits, scale, zero_point);
+
+  std::cout << a.sizes() << std::endl << a << std::endl;
+  std::cout << qa.sizes() << std::endl << qa << std::endl;
+  std::cout << a1.sizes() << std::endl << a1 << std::endl;
 }
 
 int main() {
   test_quantized_cuda();
   std::cout << std::endl;
   test_pack_cuda();
+  std::cout << std::endl;
+  test_unpack_cuda();
 }

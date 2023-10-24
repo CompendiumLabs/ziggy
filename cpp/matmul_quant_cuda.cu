@@ -166,6 +166,71 @@ __global__ void quantize_and_pack_half(__half* a, uint8_t* b, int64_t sn, int64_
   }
 }
 
+template <unsigned int bits>
+__global__ void dequantize_and_unpack_float(uint8_t* a, float* b, int64_t sn, int64_t sk, float scale, float zero_point) {
+  constexpr unsigned int qFact = 8 / bits;
+  constexpr unsigned int pMax = (1 << bits) - 1;
+  constexpr float pMax_f = (float)pMax;
+
+  const int64_t sk_p = sk / qFact;
+
+  int64_t i = blockIdx.x * blockDim.x + threadIdx.x;
+
+  if (i < sn) {
+    uint8_t* posa = a + i * sk_p;
+    float* posb = b + i * sk;
+
+    for (int64_t k = 0; k < sk_p; k++) {
+      // load packed values
+      uint8_t vala = (*posa);
+
+      // unpack into bits-sized values
+      for (int s = 0; s < 8; s += bits) {
+        uint8_t vala_i = (uint8_t)((vala >> s) & pMax);
+        float vala_f = (float)vala_i;
+        (*posb) = scale * (vala_f - zero_point);
+        posb++;
+      }
+
+      // increment base value
+      posa++;
+    }
+  }
+}
+
+template <unsigned int bits>
+__global__ void dequantize_and_unpack_half(uint8_t* a, __half* b, int64_t sn, int64_t sk, float scale, float zero_point) {
+  constexpr unsigned int qFact = 8 / bits;
+  constexpr unsigned int pMax = (1 << bits) - 1;
+
+  const int64_t sk_p = sk / qFact;
+  const __half scale_h = __float2half(scale);
+  const __half zero_point_h = __float2half(zero_point);
+
+  int64_t i = blockIdx.x * blockDim.x + threadIdx.x;
+
+  if (i < sn) {
+    uint8_t* posa = a + i * sk_p;
+    __half* posb = b + i * sk;
+
+    for (int64_t k = 0; k < sk_p; k++) {
+      // load packed values
+      uint8_t vala = (*posa);
+
+      // unpack into bits-sized values
+      for (int s = 0; s < 8; s += bits) {
+        uint8_t vala_i = (uint8_t)((vala >> s) & pMax);
+        __half vala_h = __int2half_rn(vala_i);
+        (*posb) = scale_h * (vala_h - zero_point_h);
+        posb++;
+      }
+
+      // increment base value
+      posa++;
+    }
+  }
+}
+
 Tensor matmul_quant_cuda(Tensor a, Tensor b, unsigned int bits, float scale, float zero_point) {
   at::Device devicea = a.device();
   at::Device deviceb = b.device();
@@ -283,11 +348,11 @@ Tensor quantize_and_pack_cuda(Tensor a, unsigned int bits, float scale, float ze
   dim3 blocks((sn + threads.x - 1) / threads.x);
 
   Tensor b = torch::empty({sn, sk_p}, torch::device(kCUDA).dtype(torch::kUInt8));
+  uint8_t* b_ptr = b.data_ptr<uint8_t>();
 
   switch (typea) {
     case torch::kFloat: {
       float* a_ptr = a.data_ptr<float>();
-      uint8_t* b_ptr = b.data_ptr<uint8_t>();
 
       switch (bits) {
         case 8: {
@@ -315,7 +380,6 @@ Tensor quantize_and_pack_cuda(Tensor a, unsigned int bits, float scale, float ze
     }
     case torch::kHalf: {
       __half* a_ptr = reinterpret_cast<__half*>(a.data_ptr<at::Half>());
-      uint8_t* b_ptr = b.data_ptr<uint8_t>();
 
       switch (bits) {
         case 8: {
@@ -343,6 +407,85 @@ Tensor quantize_and_pack_cuda(Tensor a, unsigned int bits, float scale, float ze
     }
     default: {
       TORCH_CHECK(false, "Unsupported type for input tensor '", typea, "'");
+    }
+  }
+
+  return b;
+}
+
+// this assumes normal strides since `a` is packed anyway
+Tensor dequantize_and_unpack_cuda(Tensor a, at::ScalarType typeb, unsigned int bits, float scale, float zero_point) {
+  at::ScalarType typea = a.scalar_type();
+  at::IntArrayRef sizesa = a.sizes();
+  assert(typea == torch::kUInt8);
+
+  int64_t sn = sizesa[0];
+  int64_t sk_p = sizesa[1];
+  int64_t sk = sk_p * (8 / bits);
+
+  dim3 threads(kWarpSize);
+  dim3 blocks((sn + threads.x - 1) / threads.x);
+
+  Tensor b = torch::empty({sn, sk}, torch::device(kCUDA).dtype(typeb));
+  uint8_t* a_ptr = a.data_ptr<uint8_t>();
+
+  switch (typeb) {
+    case torch::kFloat: {
+      float* b_ptr = b.data_ptr<float>();
+
+      switch (bits) {
+        case 8: {
+          dequantize_and_unpack_float<8><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, scale, zero_point);
+          break;
+        }
+        case 4: {
+          dequantize_and_unpack_float<4><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, scale, zero_point);
+          break;
+        }
+        case 2: {
+          dequantize_and_unpack_float<2><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, scale, zero_point);
+          break;
+        }
+        case 1: {
+          dequantize_and_unpack_float<1><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, scale, zero_point);
+          break;
+        }
+        default: {
+          TORCH_CHECK(false, "Unsupported number of quantization bits '", bits, "'");
+        }
+      }
+
+      break;
+    }
+    case torch::kHalf: {
+      __half* b_ptr = reinterpret_cast<__half*>(b.data_ptr<at::Half>());
+
+      switch (bits) {
+        case 8: {
+          dequantize_and_unpack_half<8><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, scale, zero_point);
+          break;
+        }
+        case 4: {
+          dequantize_and_unpack_half<4><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, scale, zero_point);
+          break;
+        }
+        case 2: {
+          dequantize_and_unpack_half<2><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, scale, zero_point);
+          break;
+        }
+        case 1: {
+          dequantize_and_unpack_half<1><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, scale, zero_point);
+          break;
+        }
+        default: {
+          TORCH_CHECK(false, "Unsupported number of quantization bits '", bits, "'");
+        }
+      }
+
+      break;
+    }
+    default: {
+      TORCH_CHECK(false, "Unsupported type for input tensor '", typeb, "'");
     }
   }
 

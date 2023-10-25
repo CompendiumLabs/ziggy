@@ -9,7 +9,7 @@ import torch
 from torch.nn.functional import normalize
 from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM, AutoConfig
 
-from utils import pipeline_threads, batch_generator, cumsum, cumul_bounds, sprint, RequestTracker
+from utils import pipeline_threads, batch_generator, batch_indices, cumsum, cumul_bounds, sprint, RequestTracker
 
 ##
 ## Constants
@@ -268,7 +268,10 @@ class HuggingfaceEmbedding:
 
     def embed_batch(self, text):
         doc_indices, input_ids, attention_mask = self.tokenize_batch(text)
-        embed = self.forward_batch(input_ids, attention_mask)
+        indices = batch_indices(input_ids.size(0), self.batch_size)
+        embed = torch.cat([
+            self.forward_batch(input_ids[i1:i2], attention_mask[i1:i2]) for i1, i2 in indices
+        ])
         return doc_indices, embed
 
     def embed(self, text, threaded=False):
@@ -285,7 +288,10 @@ class HuggingfaceEmbedding:
                 return self.tokenize_batch(texts)
             def forwarder(data):
                 doc_indices, input_ids, attention_mask = data
-                embed = self.forward_batch(input_ids, attention_mask)
+                indices = batch_indices(input_ids.size(0), self.batch_size)
+                embed = torch.cat([
+                    self.forward_batch(input_ids[i1:i2], attention_mask[i1:i2]) for i1, i2 in indices
+                ])
                 results.append((doc_indices, embed))
 
             # embed chunks and average

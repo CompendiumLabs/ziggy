@@ -1,9 +1,12 @@
+#!/usr/bin/env python
+
+import os
 import time
 from itertools import chain
 from subprocess import run
 
 import torch
-import mteb
+from mteb import MTEB
 
 from llm import HuggingfaceEmbedding
 from database import stream_jsonl, paragraph_splitter, DocumentDatabase
@@ -14,7 +17,7 @@ def load_data(path, delim='\n', minlen=100, nrows=None):
     chunks = list(chain(*[paragraph_splitter(doc, delim=delim, minlen=minlen) for doc in docs]))
     return chunks
 
-def profile_embed(model, path, delim='\n', minlen=100, maxlen=256, maxrows=None, onnx=True, compile=False):
+def profile_embed(model, path, maxlen=256, delim='\n', minlen=100, maxrows=None, onnx=True, compile=False):
     if type(model) is str:
         emb = HuggingfaceEmbedding(model_id=model, maxlen=maxlen, onnx=onnx, compile=compile)
     else:
@@ -31,47 +34,56 @@ def profile_embed(model, path, delim='\n', minlen=100, maxlen=256, maxrows=None,
     speed = nchunks/delta
 
     # get memory stats
+    pid = os.getpid()
     cmd = run(
-        'nvidia-smi --format=csv,noheader,nounits --query-gpu=memory.used',
+        f'nvidia-smi -q -x | xq -x \"/nvidia_smi_log/gpu/processes/process_info[./pid = \'{pid}\']/used_memory\"',
         shell=True, capture_output=True
     )
-    mem = int(cmd.stdout.decode('utf-8').strip())
+    mem = cmd.stdout.decode('utf-8').strip()
 
+    # print our results
     print()
     print(f'Documents: {ndocs}')
     print(f'Chunks: {nchunks}')
     print(f'Time: {delta:.2f} seconds')
     print(f'Speed: {speed:.2f} chunks/second')
-    print(f'Memory: {mem} MiB')
+    print(f'Memory: {mem}')
 
 # wrapper for quantization tests
-class QuantizationWrapper:
-    def __init__(model, qspec):
+class MtebWrapper:
+    def __init__(self, model, qspec=None):
         self.model = model
         self.qspec = qspec
 
-    def embed(self, text):
-        vecs = self.model.embed(text)
-        qvec = self.qspec.quantize(vecs)
-        dvec = self.qspec.dequantize(qvec)
-        return dvec
+    def encode(self, text, **kwargs):
+        print(f'encode: {len(text)}')
+        vecs = self.model.embed(text, threaded=True)
+        if self.qspec is None:
+            vec1 = vecs
+        else:
+            qvec = self.qspec.quantize(vecs)
+            vec1 = self.qspec.dequantize(qvec)
+        return vec1.cpu().numpy()
+
+def profile_mteb(model, maxlen=256, onnx=True, compile=False):
+    if type(model) is str:
+        emb = HuggingfaceEmbedding(model_id=model, maxlen=maxlen, onnx=onnx, compile=compile)
+    else:
+        emb = model
+    emb1 = MtebWrapper(emb)
+
+    # run benchmarks
+    evaluation = MTEB(task_types=['Retrieval'])
+    results = evaluation.run(emb1, output_folder=f'benchmarks/{model}-{maxlen}')
+
+    # print our results
+    print(results)
 
 # main entry point
 if __name__ == '__main__':
-    import argparse
+    import fire
 
-    parser = argparse.ArgumentParser(description='Profile LLM embedding')
-    parser.add_argument('model', type=str, help='model id or path')
-    parser.add_argument('path', type=str, help='path to jsonl file')
-    parser.add_argument('--maxlen', type=int, default=256, help='maximum paragraph length')
-    parser.add_argument('--delim', type=str, default='\n', help='paragraph delimiter')
-    parser.add_argument('--minlen', type=int, default=100, help='minimum paragraph length')
-    parser.add_argument('--maxrows', type=int, default=None, help='number of rows to load')
-    parser.add_argument('--no-onnx', action='store_true', help='use onnx model')
-    parser.add_argument('--compile', action='store_true', help='compile onnx model')
-    args = parser.parse_args()
-
-    profile_embed(
-        args.model, args.path, maxlen=args.maxlen, delim=args.delim, minlen=args.minlen,
-        maxrows=args.maxrows, onnx=not args.no_onnx, compile=args.compile
-    )
+    fire.Fire({
+        'profile': profile_embed,
+        'mteb': profile_mteb,
+    })

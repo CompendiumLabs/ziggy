@@ -12,14 +12,21 @@ from mteb import MTEB
 
 from llm import HuggingfaceEmbedding
 from database import stream_jsonl, paragraph_splitter, DocumentDatabase
+from quant import Half, Float, QuantType
+
+TASKS_CQAD = [
+    'CQADupstackAndroidRetrieval', 'CQADupstackEnglishRetrieval', 'CQADupstackGamingRetrieval', 'CQADupstackGisRetrieval',
+    'CQADupstackMathematicaRetrieval', 'CQADupstackPhysicsRetrieval', 'CQADupstackProgrammersRetrieval', 'CQADupstackStatsRetrieval',
+    'CQADupstackTexRetrieval', 'CQADupstackUnixRetrieval', 'CQADupstackWebmastersRetrieval', 'CQADupstackWordpressRetrieval'
+]
 
 TASKS_RETRIEVAL = [
-    'ArguAna', 'ClimateFEVER', 'CQADupstackAndroidRetrieval', 'CQADupstackEnglishRetrieval', 'CQADupstackGamingRetrieval',
-    'CQADupstackGisRetrieval', 'CQADupstackMathematicaRetrieval', 'CQADupstackPhysicsRetrieval', 'CQADupstackProgrammersRetrieval',
-    'CQADupstackStatsRetrieval', 'CQADupstackTexRetrieval', 'CQADupstackUnixRetrieval', 'CQADupstackWebmastersRetrieval',
-    'CQADupstackWordpressRetrieval', 'DBPedia', 'FEVER', 'FiQA2018', 'HotpotQA', 'MSMARCO', 'NFCorpus', 'NQ', 'QuoraRetrieval',
-    'SCIDOCS', 'SciFact', 'Touche2020', 'TRECCOVID'
+    'ArguAna', 'ClimateFEVER', *TASKS_CQAD, 'DBPedia', 'FEVER', 'FiQA2018', 'HotpotQA', 'MSMARCO',
+    'NFCorpus', 'NQ', 'QuoraRetrieval', 'SCIDOCS', 'SciFact', 'Touche2020', 'TRECCOVID'
 ]
+
+def task_split(task):
+    return 'dev' if task == 'MSMARCO' else 'test'
 
 # load jsonl chunks directly
 def load_data(path, delim='\n', minlen=100, nrows=None):
@@ -75,16 +82,23 @@ class MtebWrapper:
             vec1 = self.qspec.dequantize(qvec)
         return vec1.cpu().numpy()
 
-def profile_mteb(model, maxlen=256, savedir='benchmarks', onnx=True, compile=False):
+def profile_mteb(model, maxlen=256, qspec=Half, savedir='benchmarks', onnx=True, compile=False):
     if type(model) is str:
         emb = HuggingfaceEmbedding(model_id=model, maxlen=maxlen, onnx=onnx, compile=compile)
     else:
         emb = model
-    emb1 = MtebWrapper(emb)
+
+    # set up quantization
+    emb1 = MtebWrapper(emb, qspec=qspec)
+    quant = qspec.qtype.name
 
     # run benchmarks
-    evaluation = MTEB(tasks=TASKS_RETRIEVAL, task_langs='en')
-    results = evaluation.run(emb1, output_folder=f'{savdir}/{model}-{maxlen}')
+    for task in TASKS_RETRIEVAL:
+        split = task_split(task)
+        evaluation = MTEB(tasks=[task], task_langs=['en'])
+        results = evaluation.run(
+            emb1, output_folder=f'{savedir}/{model}-{maxlen}-{quant}', eval_splits=[split]
+        )
 
 def path_to_spec(path):
     org, tag = path.split('/')
@@ -98,7 +112,7 @@ def extract_json(path, keys):
         data = data[k]
     return data
 
-def aggregate_mteb(savedir='benchmarks', metric='ndcg_at_10'):
+def aggregate_mteb(savedir='benchmarks', metric='ndcg_at_10', display=True):
     import numpy as np
     import pandas as pd
 
@@ -107,12 +121,12 @@ def aggregate_mteb(savedir='benchmarks', metric='ndcg_at_10'):
     specs = [path_to_spec(path) for path in models]
 
     # get benchmark results
-    benchs = [[
+    tasks = [[
         os.path.splitext(b)[0] for b in glob('*.json', root_dir=f'{savedir}/{p}')
     ] for p in models]
     results = [[
-        (b, extract_json(f'{savedir}/{m}/{b}.json', ('test', metric))) for b in bs
-    ] for m, bs in zip(models, benchs)]
+        (t, extract_json(f'{savedir}/{m}/{t}.json', (task_split(t), metric))) for t in ts
+    ] for m, ts in zip(models, tasks)]
 
     # combine results
     info = chain(*[[(*m, *b) for b in bs] for m, bs in zip(specs, results)])
@@ -121,10 +135,30 @@ def aggregate_mteb(savedir='benchmarks', metric='ndcg_at_10'):
     columns = ['org', 'model', 'maxlen', 'quant']
     data = pd.DataFrame.from_records(info, columns=[*columns, 'bench', metric])
     data[metric] = 100*data[metric].astype(np.float32)
-    data = data.sort_values(by=columns)
-    avgs = data.groupby(columns)[metric].mean().to_frame()
 
-    return data, avgs
+    # aggregate over CQAD tasks
+    cqad = data[data['bench'].isin(TASKS_CQAD)]
+    cqad = cqad.groupby(columns)[metric].mean().reset_index()
+    cqad['bench'] = 'CQADupstackRetrieval'
+    data = pd.concat([data, cqad], ignore_index=True)
+    data = data[~data['bench'].isin(TASKS_CQAD)]
+
+    # compute averages
+    avgs = data.groupby(columns)[metric].mean().reset_index()
+    avgs['bench'] = 'Average'
+    data = pd.concat([data, avgs], ignore_index=True)
+
+    # sort and reshape
+    data = data.set_index([*columns, 'bench'])[metric].unstack('bench')
+    data = data.sort_index(
+        axis=1, key=lambda s: s.to_series().replace('Average', '')
+    )
+
+    # display or return
+    if display:
+        print(data.T.to_string(float_format='%.2f'))
+    else:
+        return data
 
 # main entry point
 if __name__ == '__main__':
@@ -133,4 +167,5 @@ if __name__ == '__main__':
     fire.Fire({
         'profile': profile_embed,
         'mteb': profile_mteb,
+        'aggregate': aggregate_mteb,
     })

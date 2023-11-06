@@ -2,12 +2,14 @@ __pycache__
 screenlog.*
 .vscode
 
+benchmarks
 testing
+papers
 store
 onnx
 
-cpp/build
-cpp/libtorch_cpu
-cpp/libtorch_cuda
-cpp/dist
-cpp/*.egg-info
+extension/build
+extension/libtorch_cpu
+extension/libtorch_cuda
+extension/dist
+extension/*.egg-info

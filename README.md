@@ -11,7 +11,7 @@ If you need to use an older C++ compiler with `nvcc`, set `CUDAHOSTCXX` to the d
 python setup.py install --user
 ```
 
-(Optional) To build standalone testing binaries, get `libtorch` for CUDA, assign its absolute path to $LIBTORCH_PATH$, and run:
+(Optional) To build standalone testing binaries, get `libtorch` for CUDA, assign its absolute path to `$LIBTORCH_PATH`, and run:
 ```bash
 mkdir build
 cmake -B build -DCMAKE_PREFIX_PATH=$LIBTORCH_PATH

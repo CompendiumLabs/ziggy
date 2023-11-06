@@ -4,19 +4,20 @@ The documentation is pretty sparse right now, but most of the action is in `llm.
 
 ##  Install
 
-If you need to use an older C++ compiler with `nvcc`, set `CUDAHOSTCXX` to the directory containing the `c++` binary.
-
-(Required) To build the `torch` extensions, in the `extension` directory:
+For simple usage, you no additional steps are needed beyond cloning the repository. If you want quantization support (optional), you need to build the custom `torch` extensions, in the `extension` directory:
 ```bash
+cd extension
 python setup.py install --user
 ```
 
-(Optional) To build standalone testing binaries, get `libtorch` for CUDA, assign its absolute path to `LIBTORCH_PATH`, and run:
+To build standalone testing binaries (very optional), get `libtorch` for CUDA, assign its absolute path to `LIBTORCH_PATH`, and run:
 ```bash
 mkdir build
 cmake -B build -DCMAKE_PREFIX_PATH=$LIBTORCH_PATH
 cmake --build build --config Release
 ```
+
+If you need to use an older C++ compiler with `nvcc`, set `CUDAHOSTCXX` to the directory containing the `c++` binary.
 
 ## Usage
 

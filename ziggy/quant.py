@@ -4,13 +4,18 @@ from typing import Any
 from enum import Enum
 import torch
 
-from .utils import resize_alloc
+from .utils import resize_alloc, MissingModule
 
 ##
 ## Load fast quantization extension
 ##
 
-import matmul_quant
+try:
+    import matmul_quant
+except ImportError:
+    matmul_quant = MissingModule(
+        'You need to compile the "matmul_quant" extension for quantization support.'
+    )
 
 ##
 ## QuantizedEmbedding

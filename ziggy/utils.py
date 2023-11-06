@@ -70,6 +70,17 @@ def cumul_indices(lengths):
     return [(i, j) for i, j in zip(sums[:-1], sums[1:])]
 
 ##
+## importing
+##
+
+class MissingModule:
+    def __init__(self, msg):
+        self.msg = msg
+
+    def __getattr__(self, key):
+        raise Exception(self.msg)
+
+##
 ## collections
 ##
 

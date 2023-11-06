@@ -9,6 +9,7 @@ import mimetypes
 from math import ceil, inf
 from itertools import chain, islice
 from pathlib import Path
+from glob import glob
 from torch.nn.functional import normalize
 
 from .llm import DEFAULT_EMBED, HuggingfaceEmbedding
@@ -221,9 +222,11 @@ def load_document(path):
 
 # index documents in a specified directory
 class FilesystemDatabase(DocumentDatabase):
-    def __init__(self, path, **kwargs):
+    def __init__(self, path, pattern='*', recursive=False, **kwargs):
         super().__init__(**kwargs)
         self.path = Path(path)
+        self.pattern = pattern
+        self.recursive = recursive
         self.reindex()
 
     def save(self, path):
@@ -236,7 +239,8 @@ class FilesystemDatabase(DocumentDatabase):
         self.times = data['times']
 
     def get_names(self):
-        return sorted(os.listdir(self.path))
+        names = glob(str(self.path / self.pattern), recursive=self.recursive)
+        return [os.path.relpath(n, self.path) for n in names]
 
     def get_mtime(self, name):
         return os.path.getmtime(self.path / name)

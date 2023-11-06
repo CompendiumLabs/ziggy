@@ -43,7 +43,7 @@ db = ziggy.DocumentDatabase.from_jsonl(path, embed=mod, delim='\n', minlen=100)
 Here we set the within record delimiter to a single newline and discard any chunks with less than `100` characters. This is a pretty good approach for Wikipedia. If you want to quantize the stored vectors, you can do something like the following
 
 ```python
-qpsec = ziggy.QuantSpec.from_width(ziggy.QuantType.qint4, 0.0, 0.1)
+qspec = ziggy.QuantSpec.from_width(ziggy.QuantType.qint4, 0.0, 0.1)
 db = ziggy.DocumentDatabase.from_jsonl(path, embed=mod, qspec=qspec, delim='\n', minlen=100)
 ```
 

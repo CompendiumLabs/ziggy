@@ -4,7 +4,7 @@ from typing import Any
 from enum import Enum
 import torch
 
-from utils import resize_alloc
+from .utils import resize_alloc
 
 ##
 ## Load fast quantization extension

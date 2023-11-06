@@ -11,10 +11,10 @@ from itertools import chain, islice
 from pathlib import Path
 from torch.nn.functional import normalize
 
-from llm import DEFAULT_EMBED, HuggingfaceEmbedding
-from index import TorchVectorIndex
-from quant import Float
-from utils import batch_generator, cumul_indices, groupby_dict
+from .llm import DEFAULT_EMBED, HuggingfaceEmbedding
+from .index import TorchVectorIndex
+from .quant import Float
+from .utils import batch_generator, cumul_indices, groupby_dict
 
 ##
 ## Utils

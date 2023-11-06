@@ -2,8 +2,8 @@
 
 import torch
 
-from quant import QuantizedEmbedding, Float, Half
-from utils import IndexDict, OrderedSet, resize_alloc, next_power_of_2
+from .quant import QuantizedEmbedding, Float, Half
+from .utils import IndexDict, OrderedSet, resize_alloc, next_power_of_2
 
 ##
 ## Pure Torch

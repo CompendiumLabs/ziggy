@@ -9,7 +9,7 @@ import torch
 from torch.nn.functional import normalize
 from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM, AutoConfig
 
-from utils import pipeline_threads, batch_generator, batch_indices, cumsum, cumul_bounds, sprint, RequestTracker
+from .utils import pipeline_threads, batch_generator, batch_indices, cumsum, cumul_bounds, sprint, RequestTracker
 
 ##
 ## Constants

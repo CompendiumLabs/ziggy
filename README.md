@@ -10,14 +10,14 @@ cd extension
 python setup.py install --user
 ```
 
+*If you need to use an older C++ compiler with `nvcc`, set `CUDAHOSTCXX` to the directory containing the `c++` binary.*
+
 To build standalone testing binaries (very optional), get `libtorch` for CUDA, assign its absolute path to `LIBTORCH_PATH`, and run:
 ```bash
 mkdir build
 cmake -B build -DCMAKE_PREFIX_PATH=$LIBTORCH_PATH
 cmake --build build --config Release
 ```
-
-If you need to use an older C++ compiler with `nvcc`, set `CUDAHOSTCXX` to the directory containing the `c++` binary.
 
 ## Usage
 

@@ -9,6 +9,8 @@ from subprocess import run
 if 'CUDAHOSTCXX' in os.environ:
     cudahostcxx = os.environ['CUDAHOSTCXX']
     extra_compile_args = {'nvcc': [f'--compiler-bindir={cudahostcxx}']}
+else:
+    extra_compile_args = {}
 
 # get supported cpu flags
 cmd = run(

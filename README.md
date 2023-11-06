@@ -6,12 +6,12 @@ The documentation is pretty sparse right now, but most of the action is in `llm.
 
 If you need to use an older C++ compiler with `nvcc`, set `CUDAHOSTCXX` to the directory containing the `c++` binary.
 
-(Required) To build the `torch` extensions:
+(Required) To build the `torch` extensions, in the `extension` directory:
 ```bash
 python setup.py install --user
 ```
 
-(Optional) To build standalone testing binaries, get `libtorch` and run:
+(Optional) To build standalone testing binaries, get `libtorch` for CUDA, assign its absolute path to $LIBTORCH_PATH$, and run:
 ```bash
 mkdir build
 cmake -B build -DCMAKE_PREFIX_PATH=$LIBTORCH_PATH

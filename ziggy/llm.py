@@ -4,12 +4,15 @@ import os
 import time
 from math import ceil
 from itertools import chain
+from pathlib import Path
 
 import torch
 from torch.nn.functional import normalize
-from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM, AutoConfig
+from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM, AutoConfig, BitsAndBytesConfig
+from sentencepiece import SentencePieceProcessor
 
 from .utils import pipeline_threads, batch_generator, batch_indices, cumsum, cumul_bounds, sprint, RequestTracker
+from .model import load_torch_model, sample, decode_token
 
 ##
 ## Constants
@@ -25,29 +28,17 @@ B_SYS, E_SYS = "<<SYS>>", "\n<</SYS>>"
 DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant. Always answer if you are able to. If you are unsure about the answer to a question, provide an explanation of why you are unable to answer and suggest additional information that may be useful to include in a subsequent query. Do not provide warnings about ethics, morality, illegality, safety, or possible incorrectness."
 
 ##
-## Utils
+## Text
 ##
 
 # generate a llama query
 def llama_chat(query, system_prompt):
     return f'{B_INST} {B_SYS}\n{system_prompt}\n{E_SYS}\n\n{query} {E_INST}'
 
-# sampler for manual generation
-def sample(logits, top_k=None, temp=1.0):
-    # only sample amongst top_k if given
-    if top_k is not None:
-        cutoff = torch.topk(logits, top_k, dim=-1).values[:,-1]
-        logits = torch.where(logits >= cutoff.unsqueeze(-1), logits, -torch.inf)
-
-    # turn into probabilities and return sample
-    probs = torch.softmax(logits/temp, dim=-1)
-    index = torch.multinomial(probs, 1).squeeze(-1)
-    return index
-
 # convert sentencepiece tokens to text
 def convert_sentencepice(toks):
     return ''.join([
-        tok.replace('▁', ' ') if tok.startswith('▁') else tok.replace('<0x0A>', '\n') for tok in toks
+        tok.replace('▁', ' ').replace('<0x0A>', '\n') for tok in toks
     ])
 
 def length_splitter(text, max_length):
@@ -62,44 +53,11 @@ def length_splitter(text, max_length):
 ## Models
 ##
 
-class HuggingfaceModel:
-    def __init__(
-        self, model=DEFAULT_MODEL, device='cuda', bits=None, compile=False, **kwargs
-    ):
-        # set options
+class LanguageModel:
+    def __init__(self, model, tokenizer, device='cuda'):
+        self.model = model
+        self.tokenizer = tokenizer
         self.device = device
-
-        # load tokenizer
-        self.tokenizer = AutoTokenizer.from_pretrained(model, token=True)
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
-
-        # choose right bits
-        if bits is None:
-            bits = 16 if device == 'cuda' else 32
-        if device == 'cuda' and bits == 4:
-            bitargs = {'load_in_4bit': True, 'bnb_4bit_compute_dtype': torch.bfloat16}
-        elif device == 'cuda' and bits == 8:
-            bitargs = {'load_in_8bit': True, 'bnb_8bit_compute_dtype': torch.bfloat16}
-        elif bits == 16:
-            bitargs = {'torch_dtype': torch.float16}
-        elif bits == 32:
-            bitargs = {'torch_dtype': torch.float32}
-        else:
-            raise Exception(f'Unsupported device/bits combination: {device}/{bits}')
-
-        # load model code and weights
-        self.modconf = AutoConfig.from_pretrained(
-            model, output_hidden_states=True, pretraining_tp=1, token=True
-        )
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model, trust_remote_code=True, config=self.modconf,
-            device_map=device, **bitargs, **kwargs
-        )
-
-        # compile model if needed
-        if compile:
-            self.model = torch.compile(self.model)
 
     def encode(self, text, **kwargs):
         targs = {'padding': True, 'truncation': True, **kwargs}
@@ -143,8 +101,7 @@ class HuggingfaceModel:
                 output = self.model(input_ids)
 
             # get new index at last element
-            logits = output.logits[:,-1,:]
-            index = sample(logits, top_k=top_k, temp=temp)
+            index = sample(output.logits, temp=temp, top_k=top_k)
 
             # break if we hit end token
             if index[0] == self.tokenizer.eos_token_id:
@@ -158,6 +115,116 @@ class HuggingfaceModel:
             # shift and add to input_ids
             trim = 1 if input_ids.size(1) == context else 0
             input_ids = torch.cat((input_ids[:,trim:], index.unsqueeze(1)), dim=1)
+
+    def igenerate(self, prompt, **kwargs):
+        for s in self.generate(prompt, **kwargs):
+            sprint(s)
+
+class HuggingfaceModel(LanguageModel):
+    def __init__(
+        self, model_id=DEFAULT_MODEL, device='cuda', bits=None, **kwargs
+    ):
+        # load tokenizer
+        tokenizer = AutoTokenizer.from_pretrained(model_id, token=True)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+
+        # choose right bits
+        if bits is None:
+            bits = 16 if device == 'cuda' else 32
+
+        # set up quantization
+        if device == 'cuda' and bits == 4:
+            bitargs = dict(
+                load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_quant_type='nf4',
+            )
+        elif device == 'cuda' and bits == 8:
+            bitargs = dict(load_in_8bit=True)
+        elif bits == 16:
+            bitargs = dict(torch_dtype=torch.float16)
+        elif bits == 32:
+            bitargs = dict(torch_dtype=torch.float32)
+        else:
+            raise Exception(f'Unsupported device/bits combination: {device}/{bits}')
+
+        # set device_map
+        device_map = {'': 0} if device == 'cuda' else device_map
+
+        # load model code and weights
+        modconf = AutoConfig.from_pretrained(
+            model_id, output_hidden_states=True, pretraining_tp=1, token=True
+        )
+        model = AutoModelForCausalLM.from_pretrained(
+            model_id, trust_remote_code=True, config=modconf, device_map=device_map, **bitargs, **kwargs
+        )
+
+        # pass to superclass
+        super().__init__(model, tokenizer, device=device, **kwargs)
+
+class TorchLlamaModel:
+    def __init__(self, checkpoint_path, tokenizer_path=None, max_seq_length=1024, bits=8, compile=True, device='cuda'):
+        if type(checkpoint_path) is str:
+            checkpoint_path = Path(checkpoint_path)
+        if tokenizer_path is None:
+            tokenizer_path = checkpoint_path.parent / 'tokenizer.model'
+
+        self.device = device
+        self.toker = SentencePieceProcessor(model_file=str(tokenizer_path))
+
+        print('Loading model...')
+        self.model = load_torch_model(checkpoint_path, device=device, bits=bits)
+
+        if compile:
+            print('Compiling model...')
+            self.decode = torch.compile(decode_token, mode='reduce-overhead', fullgraph=True)
+        else:
+            self.decode = decode_token
+
+        with torch.device(device):
+            self.model.setup_caches(max_batch_size=1, max_seq_length=max_seq_length)
+
+    def encode(self, text, padding=None):
+        tokens = [self.toker.bos_id()] + self.toker.encode(text)
+        return torch.tensor(tokens, dtype=torch.int, device=self.device)
+
+    def generate(self, prompt, num_new_tokens=256, **kwargs):
+        # tokenize input prompt
+        tokens = self.encode(prompt)
+        T = tokens.size(0)
+
+        # do first token gen
+        input_pos = torch.arange(0, T, device=self.device)
+        next_token = decode_token(self.model, tokens, input_pos)[0]
+
+        # yield the first token
+        piece = self.toker.id_to_piece(next_token.item())
+        yield convert_sentencepice([piece])
+
+        # set up for one at a time
+        input_pos = torch.tensor([T], device=self.device, dtype=torch.int)
+
+        # loop until limit or eos token
+        for i in range(num_new_tokens):
+            # `clone` is needed to prevent torch.compile errors!
+            cur_token = next_token.clone()
+
+            # decode next token
+            with torch.backends.cuda.sdp_kernel(enable_flash=False, enable_mem_efficient=False, enable_math=True):
+                next_token = self.decode(self.model, cur_token, input_pos, **kwargs)
+
+            # check for end of string token or advance
+            if next_token == self.toker.eos_id():
+                break
+            else:
+                input_pos += 1
+
+            # yield property formatted next token
+            piece = self.toker.id_to_piece(next_token.item())
+            yield convert_sentencepice([piece])
+
+    def igenerate(self, prompt, **kwargs):
+        for s in self.generate(prompt, **kwargs):
+            sprint(s)
 
 # this has to take context at creation time
 # NOTE: llama2-70b needs n_gqa=8
@@ -233,7 +300,8 @@ class HuggingfaceEmbedding:
                 model_path, provider=provider, provider_options=provider_options
             )
         else:
-            self.model = AutoModel.from_pretrained(model_id)
+            device_map = {'': 0} if device == 'cuda' else device_map
+            self.model = AutoModel.from_pretrained(model_id, device_map=device_map)
 
         # get model info
         self.batch_size = batch_size

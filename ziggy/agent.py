@@ -3,9 +3,9 @@
 import torch
 from random import shuffle
 
-from llm import sprint, DEFAULT_SYSTEM_PROMPT
-from index import TorchVectorIndex
-from utils import sprint, tee, groupby_dict
+from .llm import sprint, DEFAULT_SYSTEM_PROMPT
+from .index import TorchVectorIndex
+from .utils import sprint, tee, groupby_dict
 
 ##
 ## simple one-shot agent with context

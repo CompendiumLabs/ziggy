@@ -1,8 +1,13 @@
+import sys
+sys.path.append('./ziggy/gptfast')
+
 from . import utils
 from . import llm
 from . import quant
 from . import index
 from . import database
+from . import agent
+from . import server
 
 from .llm import HuggingfaceEmbedding
 from .quant import QuantType, QuantSpec

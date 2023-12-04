@@ -8,6 +8,7 @@ import mimetypes
 
 from math import ceil, inf
 from itertools import chain, islice
+from operator import itemgetter
 from pathlib import Path
 from glob import glob
 from torch.nn.functional import normalize
@@ -15,19 +16,24 @@ from torch.nn.functional import normalize
 from .llm import DEFAULT_EMBED, HuggingfaceEmbedding
 from .index import TorchVectorIndex
 from .quant import Float
-from .utils import batch_generator, cumul_indices, groupby_dict
+from .utils import batch_generator, cumul_indices, groupby_dict, string_splitter
 
 ##
 ## Utils
 ##
 
 # default paragraph splitter
-def paragraph_splitter(text, delim='\n{2,}', minlen=1):
+def paragraph_splitter(text, delim='\n{2,}', minlen=1, maxlen=None):
     if delim is not None:
-        paras = [para.strip() for para in re.split(delim, text)]
+        paras = [p.strip() for p in re.split(delim, text)]
     else:
         paras = [text]
-    return [para for para in paras if len(para) >= minlen]
+    paras = [p for p in paras if len(p) >= minlen]
+    if maxlen is not None:
+        paras = list(chain.from_iterable(
+            string_splitter(p, maxlen) for p in paras
+        ))
+    return paras
 
 # robust text reader (for encoding errors)
 def read_text(path):
@@ -60,15 +66,15 @@ def stream_jsonl(path, maxrows=None):
 # dindex: TorchVectorIndex {name: vec}
 class DocumentDatabase:
     def __init__(
-            self, embed=DEFAULT_EMBED, delim='\n{2,}', minlen=1, batch_size=4096,
-            model_device='cuda', index_device='cuda', doc_index=True, allocate=True,
-            qspec=Float, dims=None, **kwargs
+            self, embed=DEFAULT_EMBED, delim='\n{2,}', minlen=1, maxlen=None, batch_size=4096,
+            model_device='cuda', index_device='cuda', doc_index=True, allocate=True, qspec=Float,
+            dims=None, **kwargs
         ):
         # instantiate model and embedding
         self.embed = HuggingfaceEmbedding(embed, device=model_device) if type(embed) is str else embed
 
         # set up options
-        self.splitter = lambda s: paragraph_splitter(s, delim=delim, minlen=minlen)
+        self.splitter = lambda s: paragraph_splitter(s, delim=delim, minlen=minlen, maxlen=maxlen)
         self.batch_size = batch_size
 
         # initalize index
@@ -179,7 +185,7 @@ class DocumentDatabase:
         # embed query string
         qvec = self.embed.embed(query).squeeze()
 
-        # search document index
+        # search document index and filter by cutoff
         docs = self.dindex.search(qvec, kd, return_simil=False) if self.dindex is not None else None
         labs, sims = self.cindex.search(qvec, kc, groups=docs)
         match = [l for l, v in zip(labs, sims.tolist()) if v > cutoff]
@@ -188,7 +194,7 @@ class DocumentDatabase:
         if len(match) == 0:
             return {}
 
-        # group by document and filter by cutoff
+        # group by document
         docs, idxs = zip(*match)
         text = {
             k: [self.chunks[k][i] for i in v] for k, v in groupby_dict(idxs, docs).items()

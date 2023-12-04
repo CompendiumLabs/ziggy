@@ -1,5 +1,8 @@
+@import './ibmplexsans.css';
+
 body {
-    font-family: Arial, sans-serif;
+    font-family: 'IBMPlexSans', sans-serif;
+    font-size: 110%;
     margin: 0;
     padding: 0;
     display: flex;
@@ -12,13 +15,19 @@ body {
 .chat-container {
     width: 1000px;
     height: 100%;
+    padding: 0 100px;
     margin-bottom: 10px;
+    border-left: 1px solid #CCC;
+    border-right: 1px solid #CCC;
     display: flex;
     flex-direction: column;
     justify-content: end;
 }
 
 .chat-box {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
     overflow-y: auto;
     padding-bottom: 200px;
     padding-top: 100px;
@@ -32,43 +41,60 @@ body {
     display: none;
 }
 
-.chat-box .message div {
-    padding: 10px;
-    margin: 5px;
+.chat-box .system, .chat-box .query {
+    border: 1px solid #666;
+    background-color: white;
     border-radius: 4px;
-    max-width: 60%;
-    border: 1px solid white;
-    display: inline-block;
-    clear: both;
-    white-space: break-spaces;
 }
 
-.chat-box .user div {
-    float: right;
-    background-color: rgb(0, 123, 255, 0.85);
-    border: 1px solid rgb(0, 123, 255, 0.85);
-    color: white;
-}
-
-.chat-box .user div:hover {
-    border: 1px solid #0056b3;
-}
-
-.chat-box .bot div {
-    float: left;
+.chat-box .system, .chat-box .user {
     background-color: #EEE;
-    border: 1px solid #EEE;
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
 }
 
-.chat-box .bot div:hover {
-    border: 1px solid #CCC;
+.chat-box .tag {
+    font-weight: bold;
+    font-variant: small-caps;
+    padding: 10px;
+    border-right: 1px solid #666;
+    width: 70px;
+    text-align: center;
+}
+
+.chat-box .tag, .chat-box .msg {
+    padding: 10px;
+}
+
+.chat-box .system {
+    display: inline-flex;
+    flex-direction: row;
+}
+
+.chat-box .query {
+    display: flex;
+    flex-direction: column;
+}
+
+.chat-box .query .user {
+    display: flex;
+    flex-direction: row;
+    border-bottom: 1px solid #666;
+}
+
+.chat-box .query .bot {
+    min-height: 26.4px;
+}
+
+.chat-box .query .bot.error {
+    color: #FF0D57;
 }
 
 .entry-box {
     position: absolute;
-    width: 1000px;
+    width: 800px;
     margin: auto;
-    bottom: 100px;
+    bottom: 90px;
     display: flex;
 }
 
@@ -79,6 +105,8 @@ body {
     border: 1px solid #666;
     box-shadow: 0px 4px 8px rgba(0, 0, 0, 0.1);
     border-radius: 4px;
+    background-color: rgba(255, 255, 255, 0.8);
+    backdrop-filter: blur(3px);
 }
 
 .entry-box input:focus{
@@ -90,4 +118,29 @@ body {
     border-color: #999;
     color: #AAA;
     box-shadow: none;
+}
+
+/* mardown */
+
+.markdown {
+    line-height: 1.5;
+    padding: 10px;
+}
+
+.markdown *:first-child {
+    margin-top: 0px !important; 
+}
+
+.markdown *:last-child {
+    margin-bottom: 0px !important; 
+}
+
+.markdown p {
+    margin: 10px 0;
+    white-space: break-spaces;
+}
+
+.markdown ul, .markdown ol {
+    margin: 0 20px;
+    padding-left: 20px;
 }

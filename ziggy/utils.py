@@ -69,6 +69,10 @@ def cumul_indices(lengths):
     sums = cumsum(lengths)
     return [(i, j) for i, j in zip(sums[:-1], sums[1:])]
 
+def string_splitter(text, maxlen):
+    for i, j in batch_indices(len(text), maxlen):
+        yield text[i:j]
+
 ##
 ## importing
 ##

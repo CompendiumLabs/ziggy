@@ -12,6 +12,7 @@ from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM, AutoCon
 from sentencepiece import SentencePieceProcessor
 
 from .utils import pipeline_threads, batch_generator, batch_indices, cumsum, cumul_bounds, sprint, RequestTracker
+from .prompt import prompt_generator
 from .model import load_torch_model, sample, decode_token
 
 ##
@@ -22,18 +23,9 @@ from .model import load_torch_model, sample, decode_token
 DEFAULT_MODEL = 'meta-llama/Llama-2-7b-chat-hf'
 DEFAULT_EMBED = 'sentence-transformers/all-MiniLM-L6-v2'
 
-# llama special strings
-B_INST, E_INST = "[INST]", "[/INST]"
-B_SYS, E_SYS = "<<SYS>>", "\n<</SYS>>"
-DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant. Always answer if you are able to. If you are unsure about the answer to a question, provide an explanation of why you are unable to answer and suggest additional information that may be useful to include in a subsequent query. Do not provide warnings about ethics, morality, illegality, safety, or possible incorrectness."
-
 ##
 ## Text
 ##
-
-# generate a llama query
-def llama_chat(query, system_prompt):
-    return f'{B_INST} {B_SYS}\n{system_prompt}\n{E_SYS}\n\n{query} {E_INST}'
 
 # convert sentencepiece tokens to text
 def convert_sentencepice(toks):
@@ -229,22 +221,27 @@ class TorchLlamaModel:
 # this has to take context at creation time
 # NOTE: llama2-70b needs n_gqa=8
 class LlamaCppModel:
-    def __init__(self, model_path, context=2048, n_gpu_layers=100, verbose=False, **kwargs):
+    def __init__(self, model_path, context=2048, n_gpu_layers=100, verbose=False, prompt_type='llama', **kwargs):
         from llama_cpp import Llama
+
+        # general options
+        self.prompt_type = prompt_type
 
         # load llama model
         self.model = Llama(
             model_path, n_ctx=context, n_gpu_layers=n_gpu_layers, verbose=verbose, **kwargs
         )
 
-    def generate(self, prompt, chat=True, context=None, maxlen=512, top_k=10, temp=1.0, **kwargs):
-        # splice in chat instructions
-        if chat is not False:
-            system_prompt = DEFAULT_SYSTEM_PROMPT if chat is True else chat
-            prompt = llama_chat(prompt, system_prompt=system_prompt)
+    def generate(self, query, system=None, context=None, maxgen=None, temp=1.0, top_k=10, **kwargs):
+        # get prompt generator
+        gen_prompt = prompt_generator(self.prompt_type, system=system)
+        prompt = gen_prompt(query)
+        print(f'PROMPT: {prompt}')
 
         # construct stream object
-        stream = self.model(prompt, max_tokens=maxlen, stream=True, top_k=top_k, temperature=temp, **kwargs)
+        stream = self.model(
+            prompt, max_tokens=maxgen, stream=True, temperature=temp, top_k=top_k, **kwargs
+        )
 
         # return generated tokens
         for i, output in enumerate(stream):

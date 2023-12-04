@@ -25,16 +25,19 @@ def buffer_stream(stream, min_size):
         yield buf
 
 # generate response from llm
-def gen_response(model, prompt, buffer_size):
-    stream = model.generate(prompt)
+def gen_response(model, prompt, buffer_size, **kwargs):
+    stream = model.generate(prompt, **kwargs)
     buffer = buffer_stream(stream, buffer_size)
-    for batch in buffer:
-        text = ''.join(batch)
-        print(text, end='', flush=True)
-        yield (text+'\0').encode('utf-8')
+    try:
+        for batch in buffer:
+            text = ''.join(batch)
+            print(text, end='', flush=True)
+            yield text.encode('utf-8')
+    except Exception as e:
+        yield f'ERROR: {e}'.encode('utf-8')
 
 # run server
-def serve(model, host='127.0.0.1', port=8000, buffer_size=1):
+def serve(model, host='127.0.0.1', port=8000, buffer_size=1, **kwargs):
     import uvicorn
     from fastapi import FastAPI
     from fastapi.staticfiles import StaticFiles
@@ -53,7 +56,7 @@ def serve(model, host='127.0.0.1', port=8000, buffer_size=1):
         prompt = query.prompt
         print(f'\n\nQUERY: {prompt}\nRESPONSE: ', sep='', flush=True)
         return StreamingResponse(
-            gen_response(model, prompt, buffer_size), media_type='text/event-stream'
+            gen_response(model, prompt, buffer_size, **kwargs), media_type='text/event-stream'
         )
 
     uvicorn.run(

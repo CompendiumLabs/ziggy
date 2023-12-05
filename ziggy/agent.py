@@ -20,9 +20,6 @@ def compile_template(template):
     compiled_template = jinja_env.from_string(template)
     return lambda c: compiled_template.render(messages=c)
 
-def token_length(text, tokenizer):
-
-
 class ContextAgent:
     def __init__(self, model, embed, data, system=DEFAULT_CONTEXT_SYSTEM):
         self.model = model

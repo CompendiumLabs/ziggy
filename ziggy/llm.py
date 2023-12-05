@@ -16,7 +16,6 @@ from .utils import (
     RequestTracker
 )
 from .prompt import prompt_generator
-from .model import load_torch_model, sample, decode_token
 
 ##
 ## Constants
@@ -25,6 +24,9 @@ from .model import load_torch_model, sample, decode_token
 # default settings
 DEFAULT_MODEL = 'meta-llama/Llama-2-7b-chat-hf'
 DEFAULT_EMBED = 'TaylorAI/bge-micro-v2'
+
+# onnx dir
+ONNX_DIR = os.environ.get('ZIGGY_ONNX_DIR', 'onnx')
 
 ##
 ## Models
@@ -146,17 +148,17 @@ class LlamaCppModel:
 
         # general options
         self.prompt_type = prompt_type
+        self.context = context
 
         # load llama model
         self.model = Llama(
             model_path, n_ctx=context, n_gpu_layers=n_gpu_layers, verbose=verbose, **kwargs
         )
 
-    def generate(self, query, system=None, context=None, maxgen=None, temp=1.0, top_k=10, **kwargs):
+    def generate(self, query, system=None, maxgen=None, temp=1.0, top_k=10, **kwargs):
         # get prompt generator
         gen_prompt = prompt_generator(self.prompt_type, system=system)
         prompt = gen_prompt(query)
-        print(f'PROMPT: {prompt}')
 
         # construct stream object
         stream = self.model(
@@ -180,7 +182,7 @@ class LlamaCppModel:
 class HuggingfaceEmbedding:
     def __init__(
         self, model_id=DEFAULT_EMBED, maxlen=None, batch_size=128, queue_size=256,
-        device='cuda', dtype=torch.float16, onnx=False, save_dir='onnx', compile=False
+        device='cuda', dtype=torch.float16, onnx=False, save_dir=ONNX_DIR, compile=False
     ):
         from onnxruntime import SessionOptions
         from optimum.onnxruntime import ORTModelForFeatureExtraction, ORTOptimizer

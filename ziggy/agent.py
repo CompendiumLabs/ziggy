@@ -20,6 +20,9 @@ def compile_template(template):
     compiled_template = jinja_env.from_string(template)
     return lambda c: compiled_template.render(messages=c)
 
+def token_length(text, tokenizer):
+
+
 class ContextAgent:
     def __init__(self, model, embed, data, system=DEFAULT_CONTEXT_SYSTEM):
         self.model = model
@@ -28,7 +31,7 @@ class ContextAgent:
         self.system = system
 
     def generate(
-        self, query, search=None, pretext=None, context=2048, maxgen=None, maxptx=4096, **kwargs
+        self, query, search=None, pretext=None, maxgen=None, maxptx=None, **kwargs
     ):
         # context search is query by default
         search = search if search is not None else query
@@ -36,17 +39,18 @@ class ContextAgent:
         # search db and get some context
         if pretext is None:
             matches = self.data.search(search, **kwargs)
-            pretext = '\n'.join([f'{k}: {v}' for k, v in matches.items()])
+            documents = {k: '\n'.join(v) for k, v in matches.items()}
+            pretext = '\n\n'.join([f"{k}:\n{v}" for k, v in documents.items()])
 
         # clamp prompt if needed
         if maxptx is not None and len(pretext) > maxptx:
             pretext = pretext[:maxptx]
 
         # set up chatml prompt
-        user = f'Text:\n{pretext}\n\nQuery: {query}'
+        user = f'TEXT:\n\n{pretext}\n\nQUERY: {query}'
 
         # generate response
-        yield from self.model.generate(user, system=self.system, context=context, maxgen=maxgen)
+        yield from self.model.generate(user, system=self.system, maxgen=maxgen)
 
     def igenerate(self, query, **kwargs):
         for s in self.generate(query, **kwargs):

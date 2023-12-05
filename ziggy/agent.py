@@ -10,7 +10,7 @@ from .utils import sprint, tee, groupby_dict
 ## simple one-shot agent with context
 ##
 
-DEFAULT_CONTEXT_SYSTEM = 'You are a knowledgable and intelligent assistant. Your purpose is to answer questions posed to you by your users using your general knowledge and the text given below. You should answer the query posed at the end concisely. Do not preface your answer with works like "Answer" or "Response", simply state your response clearly.'
+DEFAULT_CONTEXT_SYSTEM = 'You are a knowledgable and intelligent assistant. Your purpose is to answer questions posed to you by your users using your general knowledge and the text given below. You should answer the query posed at the end concisely. Do not preface your answer with works like "Answer" or "Response", simply state your response clearly. Think step by step.'
 
 def compile_template(template):
     def raise_exception(message):
@@ -28,7 +28,7 @@ class ContextAgent:
         self.system = system
 
     def generate(
-        self, query, search=None, pretext=None, context=2048, maxgen=None, maxctx=4096, **kwargs
+        self, query, search=None, pretext=None, context=2048, maxgen=None, maxptx=4096, **kwargs
     ):
         # context search is query by default
         search = search if search is not None else query
@@ -39,8 +39,8 @@ class ContextAgent:
             pretext = '\n'.join([f'{k}: {v}' for k, v in matches.items()])
 
         # clamp prompt if needed
-        if maxctx is not None and len(pretext) > maxctx:
-            pretext = pretext[:maxctx]
+        if maxptx is not None and len(pretext) > maxptx:
+            pretext = pretext[:maxptx]
 
         # set up chatml prompt
         user = f'Text:\n{pretext}\n\nQuery: {query}'

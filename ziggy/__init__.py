@@ -8,7 +8,6 @@ from . import quant
 from . import index
 from . import database
 from . import agent
-from . import server
 
 from .llm import HuggingfaceEmbedding
 from .quant import QuantType, QuantSpec

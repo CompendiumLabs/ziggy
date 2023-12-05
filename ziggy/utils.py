@@ -73,6 +73,12 @@ def string_splitter(text, maxlen):
     for i, j in batch_indices(len(text), maxlen):
         yield text[i:j]
 
+# convert sentencepiece tokens to text
+def convert_sentencepice(toks):
+    return ''.join([
+        tok.replace('▁', ' ').replace('<0x0A>', '\n') for tok in toks
+    ])
+
 ##
 ## importing
 ##

@@ -11,7 +11,10 @@ from torch.nn.functional import normalize
 from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM, AutoConfig, BitsAndBytesConfig
 from sentencepiece import SentencePieceProcessor
 
-from .utils import pipeline_threads, batch_generator, batch_indices, cumsum, cumul_bounds, sprint, RequestTracker
+from .utils import (
+    pipeline_threads, batch_generator, batch_indices, cumsum, cumul_bounds,sprint, convert_sentencepice,
+    RequestTracker
+)
 from .prompt import prompt_generator
 from .model import load_torch_model, sample, decode_token
 
@@ -21,25 +24,7 @@ from .model import load_torch_model, sample, decode_token
 
 # default settings
 DEFAULT_MODEL = 'meta-llama/Llama-2-7b-chat-hf'
-DEFAULT_EMBED = 'sentence-transformers/all-MiniLM-L6-v2'
-
-##
-## Text
-##
-
-# convert sentencepiece tokens to text
-def convert_sentencepice(toks):
-    return ''.join([
-        tok.replace('▁', ' ').replace('<0x0A>', '\n') for tok in toks
-    ])
-
-def length_splitter(text, max_length):
-    if (length := len(text)) > max_length:
-        nchunks = ceil(length/max_length)
-        starts = [i*max_length for i in range(nchunks)]
-        return [text[s:s+max_length] for s in starts]
-    else:
-        return [text]
+DEFAULT_EMBED = 'TaylorAI/bge-micro-v2'
 
 ##
 ## Models
@@ -152,71 +137,6 @@ class HuggingfaceModel(LanguageModel):
 
         # pass to superclass
         super().__init__(model, tokenizer, device=device, **kwargs)
-
-class TorchLlamaModel:
-    def __init__(self, checkpoint_path, tokenizer_path=None, max_seq_length=1024, bits=8, compile=True, device='cuda'):
-        if type(checkpoint_path) is str:
-            checkpoint_path = Path(checkpoint_path)
-        if tokenizer_path is None:
-            tokenizer_path = checkpoint_path.parent / 'tokenizer.model'
-
-        self.device = device
-        self.toker = SentencePieceProcessor(model_file=str(tokenizer_path))
-
-        print('Loading model...')
-        self.model = load_torch_model(checkpoint_path, device=device, bits=bits)
-
-        if compile:
-            print('Compiling model...')
-            self.decode = torch.compile(decode_token, mode='reduce-overhead', fullgraph=True)
-        else:
-            self.decode = decode_token
-
-        with torch.device(device):
-            self.model.setup_caches(max_batch_size=1, max_seq_length=max_seq_length)
-
-    def encode(self, text, padding=None):
-        tokens = [self.toker.bos_id()] + self.toker.encode(text)
-        return torch.tensor(tokens, dtype=torch.int, device=self.device)
-
-    def generate(self, prompt, num_new_tokens=256, **kwargs):
-        # tokenize input prompt
-        tokens = self.encode(prompt)
-        T = tokens.size(0)
-
-        # do first token gen
-        input_pos = torch.arange(0, T, device=self.device)
-        next_token = decode_token(self.model, tokens, input_pos)[0]
-
-        # yield the first token
-        piece = self.toker.id_to_piece(next_token.item())
-        yield convert_sentencepice([piece])
-
-        # set up for one at a time
-        input_pos = torch.tensor([T], device=self.device, dtype=torch.int)
-
-        # loop until limit or eos token
-        for i in range(num_new_tokens):
-            # `clone` is needed to prevent torch.compile errors!
-            cur_token = next_token.clone()
-
-            # decode next token
-            with torch.backends.cuda.sdp_kernel(enable_flash=False, enable_mem_efficient=False, enable_math=True):
-                next_token = self.decode(self.model, cur_token, input_pos, **kwargs)
-
-            # check for end of string token or advance
-            if next_token == self.toker.eos_id():
-                break
-            else:
-                input_pos += 1
-
-            # yield property formatted next token
-            piece = self.toker.id_to_piece(next_token.item())
-            yield convert_sentencepice([piece])
-
-    def igenerate(self, prompt, **kwargs):
-        for s in self.generate(prompt, **kwargs):
-            sprint(s)
 
 # this has to take context at creation time
 # NOTE: llama2-70b needs n_gqa=8
@@ -399,18 +319,10 @@ openai_config = {
     },
 }
 
-def embed_dryrun(text, dims):
-    print(f'embed_dryrun: {len(text)}')
-    time.sleep(0.0001*len(text))
-    embed = [0]*dims
-    data = [{'embedding': embed} for _ in text]
-    return {'data': data}
-
 class OpenAIEmbedding:
     def __init__(
         self, model_id=DEFAULT_OPENAI_EMBED, tokenizer_id=None, dims=None, maxlen=None, batch_size=1024,
-        dtype=torch.half, device='cuda', tok_limit=None, req_limit=None, timepad=10, dryrun=False,
-        **kwargs
+        dtype=torch.half, device='cuda', tok_limit=None, req_limit=None, timepad=10, **kwargs
     ):
         import tiktoken
         import openai as ai
@@ -432,10 +344,7 @@ class OpenAIEmbedding:
 
         # get tokenizer
         self.tokenizer = tiktoken.encoding_for_model(model_id)
-        if dryrun:
-            self.model = lambda t: embed_dryrun(t, self.dims)
-        else:
-            self.model = lambda t: ai.Embedding.create(input=t, model=model_id)
+        self.model = lambda t: ai.Embedding.create(input=t, model=model_id)
 
         # usage tracking
         req_limit = config['req_limit'] if req_limit is None else req_limit

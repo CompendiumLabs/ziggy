@@ -1,0 +1,30 @@
+# pyproject.toml
+
+[build-system]
+requires = ['setuptools>=61.0.0', 'wheel']
+build-backend = 'setuptools.build_meta'
+
+[project]
+name = 'ziggy'
+version = '0.8'
+description = 'LLM text generation and vector database.'
+readme = { file = 'README.md' , content-type = 'text/markdown' }
+authors = [{ name = 'Doug Hanley', email = 'thesecretaryofwar@gmail.com' }]
+license = { text = 'MIT' }
+classifiers = [
+    'License :: OSI Approved :: MIT License',
+    'Programming Language :: Python',
+    'Programming Language :: Python :: 3',
+]
+keywords = ['llm', 'vectordb', '']
+dependencies = ['toml', 'torch', 'transformers', 'tiktoken', 'sentencepiece']
+requires-python = '>=3.7'
+
+[project.optional-dependencies]
+onnx = ['onnx', 'onnxruntime', 'optimum']
+
+[project.urls]
+Homepage = 'http://github.com/iamlemec/ziggy'
+
+[tool.setuptools]
+package-dir = { ziggy = 'ziggy' }

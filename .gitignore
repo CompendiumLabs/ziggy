@@ -1,6 +1,7 @@
 __pycache__
 screenlog.*
 .vscode
+ziggy.egg-info
 
 /benchmarks
 /content

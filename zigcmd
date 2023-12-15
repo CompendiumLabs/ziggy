@@ -1,0 +1,42 @@
+#! /usr/bin/env python
+
+import fire
+from ziggy import llm, database, agent, server
+from ziggy.llm import DEFAULT_MODEL, DEFAULT_EMBED
+
+# get model type
+def get_model_loader(loader):
+    if loader == 'huggingface':
+        return llm.HuggingfaceModel
+    elif loader == 'llama.cpp':
+        return llm.LlamaCppModel
+    else:
+        raise Exception(f'Unknown model loader: {loader}')
+
+# retrieval augmented generation
+def rag(
+    path='.', model=DEFAULT_MODEL, embed=DEFAULT_EMBED, loader_type='huggingface',
+    prompt_type='llama', context=2048, onnx=False, pattern='*', delim='\n\n',
+    minlen=1, maxlen=None, host='127.0.0.1', port=8000, max_chunks=10
+):
+    # load generation model
+    loader = get_model_loader(loader_type)
+    mod = llm.LlamaCppModel(model, prompt_type=prompt_type, context=context)
+
+    # load embedding model
+    emb = llm.HuggingfaceEmbedding(embed, onnx=onnx)
+
+    # create database
+    db = database.FilesystemDatabase(
+        path, embed=emb, pattern=pattern, delim=delim, minlen=minlen, maxlen=maxlen
+    )
+
+    # create agent
+    ag = agent.ContextAgent(mod, emb, db)
+
+    # spin up server
+    server.serve(ag, host=host, port=port, max_chunks=max_chunks)
+
+# main interface
+if __name__ == '__main__':
+    fire.Fire(rag)

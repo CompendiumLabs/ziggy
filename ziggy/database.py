@@ -125,6 +125,7 @@ class DocumentDatabase:
         targ = texts.items() if type(texts) is dict else texts
         chunks = {k: self.splitter(v) for k, v in targ}
         chunks = {k: v for k, v in chunks.items() if len(v) > 0}
+        # chunks = {k: [f'{k}: {c}' for c in v] for k, v in chunks.items()}
         return chunks
 
     def embed_chunks(self, chunks, threaded=True):
@@ -181,13 +182,24 @@ class DocumentDatabase:
         if self.dindex is not None:
             self.dindex.clear(zero=zero)
 
-    def search(self, query, kd=25, kc=10, cutoff=-torch.inf):
+    def search(self, query, max_docs=25, max_chunks=10, cluster=True, diffuse=None, cutoff=-torch.inf):
         # embed query string
         qvec = self.embed.embed(query).squeeze()
 
-        # search document index and filter by cutoff
-        docs = self.dindex.search(qvec, kd, return_simil=False) if self.dindex is not None else None
-        labs, sims = self.cindex.search(qvec, kc, groups=docs)
+        # search document index first
+        if cluster:
+            docs = self.dindex.search(qvec, max_docs, return_simil=False)
+        else:
+            docs = None
+
+        # search within matching documents
+        labs, sims = self.cindex.search(qvec, max_chunks, groups=docs)
+
+        # introduce kernel diffusion of similarity
+        if diffuse is not None:
+            pass
+
+        # extract matched labels with cutoff
         match = [l for l, v in zip(labs, sims.tolist()) if v > cutoff]
 
         # return if no good matches
@@ -228,11 +240,10 @@ def load_document(path):
 
 # index documents in a specified directory
 class FilesystemDatabase(DocumentDatabase):
-    def __init__(self, path, pattern='*', recursive=False, **kwargs):
+    def __init__(self, path, pattern='*', **kwargs):
         super().__init__(**kwargs)
         self.path = Path(path)
         self.pattern = pattern
-        self.recursive = recursive
         self.reindex()
 
     def save(self, path):
@@ -245,8 +256,8 @@ class FilesystemDatabase(DocumentDatabase):
         self.times = data['times']
 
     def get_names(self):
-        names = glob(str(self.path / self.pattern), recursive=self.recursive)
-        return [os.path.relpath(n, self.path) for n in names]
+        names = glob(str(self.path / self.pattern), recursive=True)
+        return [os.path.relpath(n, self.path) for n in sorted(names)]
 
     def get_mtime(self, name):
         return os.path.getmtime(self.path / name)

@@ -2,6 +2,7 @@
 
 import torch
 from random import shuffle
+from itertools import chain
 
 from .index import TorchVectorIndex
 from .utils import sprint, tee, groupby_dict
@@ -10,15 +11,7 @@ from .utils import sprint, tee, groupby_dict
 ## simple one-shot agent with context
 ##
 
-DEFAULT_CONTEXT_SYSTEM = 'You are a knowledgable and intelligent assistant. Your purpose is to answer questions posed to you by your users using your general knowledge and the text given below. You should answer the query posed at the end concisely. Do not preface your answer with works like "Answer" or "Response", simply state your response clearly. Think step by step.'
-
-def compile_template(template):
-    def raise_exception(message):
-        raise TemplateError(message)
-    jinja_env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True)
-    jinja_env.globals['raise_exception'] = raise_exception
-    compiled_template = jinja_env.from_string(template)
-    return lambda c: compiled_template.render(messages=c)
+DEFAULT_CONTEXT_SYSTEM = 'You are a knowledgable and intelligent assistant. Your purpose is to answer questions posed to you by your users using your general knowledge and the text given below. You should answer the query posed at the end concisely. Do not preface your answer with works like "Answer" or "Response", simply state your response clearly. Think step by step. If you encounter math in latex format, enclose it in dollar signs ($).'
 
 class ContextAgent:
     def __init__(self, model, embed, data, system=DEFAULT_CONTEXT_SYSTEM):
@@ -28,7 +21,8 @@ class ContextAgent:
         self.system = system
 
     def generate(
-        self, query, search=None, pretext=None, maxgen=None, maxptx=None, **kwargs
+        self, query, search=None, pretext=None, maxgen=None, maxpre=None,
+        temp=1.0, top_k=0, echo=False, **kwargs
     ):
         # context search is query by default
         search = search if search is not None else query
@@ -36,18 +30,19 @@ class ContextAgent:
         # search db and get some context
         if pretext is None:
             matches = self.data.search(search, **kwargs)
-            documents = {k: '\n'.join(v) for k, v in matches.items()}
-            pretext = '\n\n'.join([f"{k}:\n{v}" for k, v in documents.items()])
+            pretext = '\n\n'.join(chain.from_iterable(matches.values()))
 
         # clamp prompt if needed
-        if maxptx is not None and len(pretext) > maxptx:
+        if maxpre is not None and len(pretext) > maxpre:
             pretext = pretext[:maxptx]
 
         # set up chatml prompt
         user = f'TEXT:\n\n{pretext}\n\nQUERY: {query}'
 
         # generate response
-        yield from self.model.generate(user, system=self.system, maxgen=maxgen)
+        yield from self.model.generate(
+            user, system=self.system, maxgen=maxgen, temp=temp, top_k=top_k
+        )
 
     def igenerate(self, query, **kwargs):
         for s in self.generate(query, **kwargs):

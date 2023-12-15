@@ -155,7 +155,7 @@ class LlamaCppModel:
             model_path, n_ctx=context, n_gpu_layers=n_gpu_layers, verbose=verbose, **kwargs
         )
 
-    def generate(self, query, system=None, maxgen=None, temp=1.0, top_k=10, **kwargs):
+    def generate(self, query, system=None, maxgen=None, temp=1.0, top_k=0, **kwargs):
         # get prompt generator
         gen_prompt = prompt_generator(self.prompt_type, system=system)
         prompt = gen_prompt(query)

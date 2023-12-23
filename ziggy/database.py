@@ -240,7 +240,7 @@ def load_document(path):
 
 # index documents in a specified directory
 class FilesystemDatabase(DocumentDatabase):
-    def __init__(self, path, pattern='*', **kwargs):
+    def __init__(self, path='.', pattern='*', **kwargs):
         super().__init__(**kwargs)
         self.path = Path(path)
         self.pattern = pattern

@@ -13,7 +13,14 @@ from .utils import sprint, tee, groupby_dict
 
 DEFAULT_CONTEXT_SYSTEM = 'You are a knowledgable and intelligent assistant. Your purpose is to answer questions posed to you by your users using your general knowledge and the text given below. You should answer the query posed at the end concisely. Do not preface your answer with works like "Answer" or "Response", simply state your response clearly. Think step by step. If you encounter math in latex format, enclose it in dollar signs ($).'
 
-class ContextAgent:
+DEFAULT_SUMMARY_SYSTEM = 'You are a knowledgable and intelligent document summarization assistant. Given the text below, provide a three paragraph summary of its contents.'
+
+class GenerateMixin:
+    def igenerate(self, text, **kwargs):
+        for s in self.generate(text, **kwargs):
+            sprint(s)
+
+class ContextAgent(GenerateMixin):
     def __init__(self, model, embed, data, system=DEFAULT_CONTEXT_SYSTEM):
         self.model = model
         self.embed = embed
@@ -44,9 +51,17 @@ class ContextAgent:
             user, system=self.system, maxgen=maxgen, temp=temp, top_k=top_k
         )
 
-    def igenerate(self, query, **kwargs):
-        for s in self.generate(query, **kwargs):
-            sprint(s)
+class SystemAgent(GenerateMixin):
+    def __init__(self, model, system):
+        self.model = model
+        self.system = system
+
+    def generate(self, text, **kwargs):
+        yield from self.model.generate(text, system=self.system, **kwargs)
+
+class SummaryAgent(SystemAgent):
+    def __init__(self, model, system=DEFAULT_SUMMARY_SYSTEM):
+        super().__init__(model, system)
 
 ##
 ## multi-shot agent with context and history

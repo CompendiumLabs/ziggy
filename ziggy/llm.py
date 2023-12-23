@@ -140,20 +140,31 @@ class HuggingfaceModel(LanguageModel):
         # pass to superclass
         super().__init__(model, tokenizer, device=device, **kwargs)
 
+def get_gguf_meta_string(model, name, length=1024):
+    from ctypes import create_string_buffer
+    from llama_cpp import llama_model_meta_val_str
+    buf = create_string_buffer(bytes(), length)
+    ret = llama_model_meta_val_str(model.model, name.encode('utf-8'), buf, length)
+    return buf.raw[:ret].decode('utf-8')
+
 # this has to take context at creation time
 # NOTE: llama2-70b needs n_gqa=8
 class LlamaCppModel:
     def __init__(self, model_path, context=2048, n_gpu_layers=100, verbose=False, prompt_type='llama', **kwargs):
         from llama_cpp import Llama
 
-        # general options
-        self.prompt_type = prompt_type
+        # store options
         self.context = context
+        self.prompt_type = prompt_type
 
         # load llama model
         self.model = Llama(
             model_path, n_ctx=context, n_gpu_layers=n_gpu_layers, verbose=verbose, **kwargs
         )
+
+        # get model info
+        self.arch = get_gguf_meta_string(self.model, 'general.architecture')
+        self.name = get_gguf_meta_string(self.model, 'general.name')
 
     def generate(self, query, system=None, maxgen=None, temp=1.0, top_k=0, **kwargs):
         # get prompt generator
@@ -169,7 +180,7 @@ class LlamaCppModel:
         for i, output in enumerate(stream):
             choice, *_ = output['choices']
             text = choice['text']
-            yield text.lstrip() if i <= 1 else text
+            yield text
 
     def igenerate(self, query, **kwargs):
         for s in self.generate(query, **kwargs):
@@ -223,6 +234,7 @@ class HuggingfaceEmbedding:
             self.model = AutoModel.from_pretrained(model_id, device_map=device_map)
 
         # get model info
+        self.name = model_id
         self.batch_size = batch_size
         self.maxlen = self.model.config.max_position_embeddings if maxlen is None else maxlen
         self.dims = self.model.config.hidden_size

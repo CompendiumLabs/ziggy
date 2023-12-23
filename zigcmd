@@ -15,9 +15,9 @@ def get_model_loader(loader):
 
 # retrieval augmented generation
 def rag(
-    path='.', model=DEFAULT_MODEL, embed=DEFAULT_EMBED, loader_type='huggingface',
-    prompt_type='llama', context=2048, onnx=False, pattern='*', delim='\n\n',
-    minlen=1, maxlen=None, host='127.0.0.1', port=8000, max_chunks=10
+    path='.', pattern='*', model=DEFAULT_MODEL, embed=DEFAULT_EMBED, loader_type='huggingface',
+    prompt_type='llama', context=2048, onnx=False, delim='\n\n', minlen=1, maxlen=None,
+    host='127.0.0.1', port=8000, max_chunks=10
 ):
     # load generation model
     loader = get_model_loader(loader_type)
@@ -28,7 +28,7 @@ def rag(
 
     # create database
     db = database.FilesystemDatabase(
-        path, embed=emb, pattern=pattern, delim=delim, minlen=minlen, maxlen=maxlen
+        path=path, pattern=pattern, embed=emb, delim=delim, minlen=minlen, maxlen=maxlen
     )
 
     # create agent

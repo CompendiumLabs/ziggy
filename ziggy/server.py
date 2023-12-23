@@ -62,6 +62,14 @@ def serve(model, host='127.0.0.1', port=8000, buffer_size=1, **kwargs):
         allow_headers=["*"],
     )
 
+    @app.get('/meta')
+    def meta():
+        return {
+            'model': model.model.name,
+            'embed': model.embed.name,
+            'context': f'{model.model.context} tokens',
+        }
+
     @app.get('/chunks')
     def chunks():
         return list(model.data.chunks.items())

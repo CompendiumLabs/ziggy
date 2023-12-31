@@ -26,92 +26,195 @@ from llava.mm_utils import (
     KeywordsStoppingCriteria,
 )
 
-def load_llava_model(model_path):
-    return load_pretrained_model(
-        model_path=model_path,
-        model_base=None,
-        model_name=get_model_name_from_path(model_path)
-    )
+from torchvision.io import read_image, ImageReadMode
+from torchvision.utils import draw_bounding_boxes
+from transformers import LayoutLMv3ImageProcessor, LayoutLMv3TokenizerFast
 
-def query_llava_images(
-    model, tokenizer, image_processor, images, query, conv_mode='llava_v1',
-    temp=1.0, top_p=None, num_beams=1, max_new_tokens=512
-):
-    # ensure list
-    if type(images) is not list:
-        images = [images]
+##
+## LayoutLMv3
+##
 
-    # load from path if needed
-    images = [
-        Image.open(i) if type(i) is str else i for i in images
-    ]
+class Block:
+    def __init__(self):
+        self.boxes = []
+        self.words = []
+        self.hull = None
 
-    image_token_se = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN
-    if IMAGE_PLACEHOLDER in query:
-        if model.config.mm_use_im_start_end:
-            query = re.sub(IMAGE_PLACEHOLDER, image_token_se, query)
+    def __len__(self):
+        return len(self.boxes)
+
+    def add(self, box, word):
+        self.boxes.append(box)
+        self.words.append(word)
+
+        if len(self.boxes) == 1:
+            self.hull = box
         else:
-            query = re.sub(IMAGE_PLACEHOLDER, DEFAULT_IMAGE_TOKEN, query)
-    else:
-        if model.config.mm_use_im_start_end:
-            query = image_token_se + '\n' + query
-        else:
-            query = DEFAULT_IMAGE_TOKEN + '\n' + query
+            hl, ht, hr, hb = self.hull
+            bl, bt, br, bb = box
+            self.hull = [
+                min(hl, bl), min(ht, bt),
+                max(hr, br), max(hb, bb),
+            ]
 
-    # make input tokens
-    conv = conv_templates[conv_mode].copy()
-    conv.append_message('USER', query)
-    conv.append_message('ASSISTANT', None)
-    prompt = conv.get_prompt()
-
-    # convert image to on device tensor
-    images_tensor = process_images(
-        images, image_processor, model.config
-    ).to(model.device, dtype=torch.float16)
-
-    # make input ids
-    input_ids = (
-        tokenizer_image_token(prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt')
-        .unsqueeze(0)
-        .cuda()
-    )
-
-    # set up stopping criterion
-    stop_str = conv.sep if conv.sep_style != SeparatorStyle.TWO else conv.sep2
-    keywords = [stop_str]
-    stopping_criteria = KeywordsStoppingCriteria(keywords, tokenizer, input_ids)
-
-    # generate output
-    with torch.inference_mode():
-        output_ids = model.generate(
-            input_ids,
-            images=images_tensor,
-            do_sample=True if temp > 0 else False,
-            temperature=temp,
-            top_p=top_p,
-            num_beams=num_beams,
-            max_new_tokens=max_new_tokens,
-            use_cache=True,
-            stopping_criteria=[stopping_criteria],
+    def close(self, box, tol=0):
+        hl, ht, hr, hb = self.hull
+        bl, bt, br, bb = box
+        return (
+            bl < hr + tol and
+            br > hl - tol and
+            bt < hb + tol and
+            bb > ht - tol
         )
 
-    # validate output
-    input_token_len = input_ids.shape[1]
-    n_diff_input_output = (input_ids != output_ids[:, :input_token_len]).sum().item()
-    if n_diff_input_output > 0:
-        print(
-            f"[Warning] {n_diff_input_output} output_ids are not the same as the input_ids"
+    def text(self):
+        return ' '.join(self.words)
+
+def glom_boxes(boxes, words, tol=0.75):
+    # init state
+    blocks = []
+    block = None
+    lwrd = None
+
+    # get inherent scale
+    tboxes = torch.tensor(boxes)
+    hscale = (tboxes[:, 3] - tboxes[:, 1]).mean()
+    htol = hscale*tol
+
+    for box, wrd in zip(boxes, words):
+        # handle first iteration
+        if block == None:
+            block = Block()
+            block.add(box, wrd)
+            continue
+
+        # append or create as needed
+        if block.close(box, tol=htol):
+            block.add(box, wrd)
+        else:
+            blocks.append(block)
+            block = Block()
+            block.add(box, wrd)
+
+    # return blocks
+    return blocks
+
+class LayoutModel:
+    def __init__(self, proc_id='microsoft/layoutlmv3-base'):
+        self.proc_id = proc_id
+        self.proc = LayoutLMv3ImageProcessor.from_pretrained(proc_id)
+
+    def process_image(self, image, markup=False):
+        if type(image) is str:
+            image = read_image(image, mode=ImageReadMode.RGB)
+        with torch.inference_mode():
+            result = self.proc(image)
+        boxes, = torch.tensor(result.boxes)
+        words = result.words
+        if markup:
+            c, h, w = image.shape
+            boxes1 = (boxes/1000)*torch.tensor([[w, h, w, h]])
+            return draw_bounding_boxes(image, boxes1)
+        else:
+            return boxes, words
+
+##
+## Nougat
+##
+
+##
+## Llava
+##
+
+class LlavaModel:
+    def __init__(self, model_id='liuhaotian/llava-v1.5-13b', device='cuda'):
+        self.device = device
+        self.model_id = model_id
+        self.model_name = get_model_name_from_path(model_id)
+        self.tokenizer, self.model, self.processor, self.context = load_pretrained_model(
+            model_path=model_id, model_base=None, model_name=self.model_name
+        )
+        self.model = self.model.to(device=device)
+
+    def query_llava_images(
+        self, images, query, conv_mode='llava_v1', temp=1.0, top_p=None, num_beams=1,
+        max_new_tokens=512
+    ):
+        # ensure list
+        if type(images) is not list:
+            images = [images]
+
+        # load from path if needed
+        images = [
+            Image.open(i) if type(i) is str else i for i in images
+        ]
+
+        image_token_se = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN
+        if IMAGE_PLACEHOLDER in query:
+            if self.model.config.mm_use_im_start_end:
+                query = re.sub(IMAGE_PLACEHOLDER, image_token_se, query)
+            else:
+                query = re.sub(IMAGE_PLACEHOLDER, DEFAULT_IMAGE_TOKEN, query)
+        else:
+            if self.model.config.mm_use_im_start_end:
+                query = image_token_se + '\n' + query
+            else:
+                query = DEFAULT_IMAGE_TOKEN + '\n' + query
+
+        # make input tokens
+        conv = conv_templates[conv_mode].copy()
+        conv.append_message('USER', query)
+        conv.append_message('ASSISTANT', None)
+        prompt = conv.get_prompt()
+
+        # convert image to on device tensor
+        images_tensor = process_images(
+            images, self.processor, self.model.config
+        ).to(self.device, dtype=torch.float16)
+
+        # make input ids
+        input_ids = (
+            tokenizer_image_token(prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt')
+            .unsqueeze(0)
+            .to(self.device)
         )
 
-    # decode output
-    outputs = tokenizer.batch_decode(
-        output_ids[:, input_token_len:], skip_special_tokens=True
-    )[0].strip()
+        # set up stopping criterion
+        stop_str = conv.sep if conv.sep_style != SeparatorStyle.TWO else conv.sep2
+        keywords = [stop_str]
+        stopping_criteria = KeywordsStoppingCriteria(keywords, self.tokenizer, input_ids)
 
-    # trim outputs
-    if outputs.endswith(stop_str):
-        outputs = outputs[: -len(stop_str)]
-    outputs = outputs.strip()
+        # generate output
+        with torch.inference_mode():
+            output_ids = self.model.generate(
+                input_ids,
+                images=images_tensor,
+                do_sample=True if temp > 0 else False,
+                temperature=temp,
+                top_p=top_p,
+                num_beams=num_beams,
+                max_new_tokens=max_new_tokens,
+                use_cache=True,
+                stopping_criteria=[stopping_criteria],
+            )
 
-    # return outputs
-    return outputs
+        # validate output
+        input_token_len = input_ids.shape[1]
+        n_diff_input_output = (input_ids != output_ids[:, :input_token_len]).sum().item()
+        if n_diff_input_output > 0:
+            print(
+                f"[Warning] {n_diff_input_output} output_ids are not the same as the input_ids"
+            )
+
+        # decode output
+        outputs = self.tokenizer.batch_decode(
+            output_ids[:, input_token_len:], skip_special_tokens=True
+        )[0].strip()
+
+        # trim outputs
+        if outputs.endswith(stop_str):
+            outputs = outputs[: -len(stop_str)]
+        outputs = outputs.strip()
+
+        # return outputs
+        return outputs

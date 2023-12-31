@@ -34,7 +34,7 @@ from transformers import LayoutLMv3ImageProcessor, LayoutLMv3TokenizerFast
 ## LayoutLMv3
 ##
 
-class Block:
+class Line:
     def __init__(self):
         self.boxes = []
         self.words = []
@@ -57,6 +57,18 @@ class Block:
                 max(hr, br), max(hb, bb),
             ]
 
+    # is this horizontally consistent with the line
+    def aligned(self, box, tol=0):
+        hl, ht, hr, hb = self.hull
+        bl, bt, br, bb = box
+        return (
+            bl < hr + tol and
+            br > hl - tol and
+            bt > ht - tol and
+            bb < hb + tol
+        )
+
+    # is this close to the line in any direction
     def close(self, box, tol=0):
         hl, ht, hr, hb = self.hull
         bl, bt, br, bb = box
@@ -70,11 +82,48 @@ class Block:
     def text(self):
         return ' '.join(self.words)
 
+class Block:
+    def __init__(self):
+        self.lines = []
+
+    def __len__(self):
+        return len(self.lines)
+
+    def add(self, box, word, tol=0):
+        # handle empty case
+        if len(self.lines) == 0:
+            line = Line()
+            line.add(box, word)
+            self.lines.append(line)
+            return True
+
+        # look for aligned lines
+        for line in reversed(self.lines):
+            if line.aligned(box, tol=tol):
+                line.add(box, word)
+                return True
+
+        # look for close lines
+        for line in reversed(self.lines):
+            if line.close(box, tol=tol):
+                line1 = Line()
+                line1.add(box, word)
+                self.lines.append(line1)
+                return True
+
+        # no match
+        return False
+
+    def hull(self):
+        hl, ht, hr, hb = zip(*[l.hull for l in self.lines])
+        return [min(hl), min(ht), max(hr), max(hb)]
+
+    def text(self):
+        return '\n'.join([l.text() for l in self.lines])
+
 def glom_boxes(boxes, words, tol=0.75):
     # init state
     blocks = []
-    block = None
-    lwrd = None
 
     # get inherent scale
     tboxes = torch.tensor(boxes)
@@ -83,18 +132,20 @@ def glom_boxes(boxes, words, tol=0.75):
 
     for box, wrd in zip(boxes, words):
         # handle first iteration
-        if block == None:
+        if len(blocks) == 0:
             block = Block()
             block.add(box, wrd)
+            blocks.append(block)
             continue
 
         # append or create as needed
-        if block.close(box, tol=htol):
-            block.add(box, wrd)
+        for block in reversed(blocks):
+            if block.add(box, wrd, tol=htol):
+                break
         else:
-            blocks.append(block)
             block = Block()
             block.add(box, wrd)
+            blocks.append(block)
 
     # return blocks
     return blocks
@@ -105,18 +156,27 @@ class LayoutModel:
         self.proc = LayoutLMv3ImageProcessor.from_pretrained(proc_id)
 
     def process_image(self, image, markup=False):
+        # handle path case
         if type(image) is str:
             image = read_image(image, mode=ImageReadMode.RGB)
+
+        # run model on input image
         with torch.inference_mode():
             result = self.proc(image)
-        boxes, = torch.tensor(result.boxes)
-        words = result.words
+
+        # get boxes and words
+        boxes, = result.boxes
+        words, = result.words
+        boxes = torch.tensor(boxes)
+
+        # un-normalize boxes
+        c, h, w = image.shape
+        boxes1 = (boxes/1000)*torch.tensor([[w, h, w, h]])
+
         if markup:
-            c, h, w = image.shape
-            boxes1 = (boxes/1000)*torch.tensor([[w, h, w, h]])
             return draw_bounding_boxes(image, boxes1)
         else:
-            return boxes, words
+            return boxes1, words
 
 ##
 ## Nougat

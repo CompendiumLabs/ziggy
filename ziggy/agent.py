@@ -5,7 +5,6 @@ from random import shuffle
 from itertools import chain
 
 from .index import TorchVectorIndex
-from .utils import sprint, tee, groupby_dict
 
 ##
 ## simple one-shot agent with context

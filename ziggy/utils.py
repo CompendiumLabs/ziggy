@@ -36,12 +36,21 @@ def allow_list(func):
             return rets if many else rets[0]
     return wrapper
 
-# group tuples by `idx` element, preserving other orders
-def groupby_dict(vals, grps):
-    getter = itemgetter(1)
-    tups = sorted(zip(vals, grps), key=getter)
+# need to sort first for true groupby
+def groupby_key(vals, key):
+    if type(key) is int:
+        key = itemgetter(key)
+    tups = sorted(vals, key=key)
     return {
-        k: [i for i, _ in v] for k, v in groupby(tups, key=getter)
+        k: list(v) for k, v in groupby(tups, key=key)
+    }
+
+# group by separate index
+def groupby_idx(vals, grps):
+    key = itemgetter(1)
+    tups = sorted(zip(vals, grps), key=key)
+    return {
+        k: [i for i, _ in v] for k, v in groupby(tups, key=key)
     }
 
 # cumulative sum

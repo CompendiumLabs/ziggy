@@ -16,7 +16,7 @@ from torch.nn.functional import normalize
 from .llm import DEFAULT_EMBED, HuggingfaceEmbedding
 from .index import TorchVectorIndex
 from .quant import Float
-from .utils import batch_generator, cumul_indices, groupby_dict, string_splitter
+from .utils import batch_generator, cumul_indices, groupby_idx, string_splitter
 
 ##
 ## Utils
@@ -209,7 +209,7 @@ class DocumentDatabase:
         # group by document
         docs, idxs = zip(*match)
         text = {
-            k: [self.chunks[k][i] for i in v] for k, v in groupby_dict(idxs, docs).items()
+            k: [self.chunks[k][i] for i in v] for k, v in groupby_idx(idxs, docs).items()
         }
 
         # return text

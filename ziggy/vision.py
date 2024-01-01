@@ -35,8 +35,11 @@ from transformers import LayoutLMv3ImageProcessor, LayoutLMv3TokenizerFast
 ##
 
 class Hull:
-    def __init__(self):
-        self.hull = None
+    def __init__(self, hull=None):
+        self.hull = hull
+
+    def __len__(self):
+        return 4
 
     def __iter__(self):
         return iter(self.hull)
@@ -67,17 +70,22 @@ class Hull:
 
 class Line:
     def __init__(self):
-        self.boxes = []
-        self.words = []
+        self.spans = []
         self.hull = Hull()
 
     def __len__(self):
-        return len(self.boxes)
+        return len(self.spans)
 
-    def add(self, box, word):
-        self.boxes.append(box)
-        self.words.append(word)
-        self.hull.add(box)
+    def __iter__(self):
+        return iter(self.spans)
+
+    def add(self, box, word, tol=0):
+        if len(self.spans) == 0 or self.aligned(box, tol=tol):
+            self.spans.append([box, word])
+            self.hull.add(box)
+            return True
+        else:
+            return False
 
     # is this horizontally consistent with the line
     def aligned(self, box, tol=0):
@@ -95,7 +103,7 @@ class Line:
         return self.hull.close(box, tol=tol)
 
     def text(self):
-        return ' '.join(self.words)
+        return ' '.join([w for _, w in self.spans])
 
 class Block:
     def __init__(self):
@@ -104,6 +112,9 @@ class Block:
 
     def __len__(self):
         return len(self.lines)
+
+    def __iter__(self):
+        return iter(self.lines)
 
     def add(self, box, word, tol=0):
         # handle empty case
@@ -120,8 +131,7 @@ class Block:
 
         # add to existing line if aligned
         for line in reversed(self.lines):
-            if line.aligned(box, tol=tol):
-                line.add(box, word)
+            if line.add(box, word, tol=tol):
                 self.hull.add(box)
                 return True
 
@@ -137,41 +147,52 @@ class Block:
         # no match
         return False
 
-    def hull(self):
-        hl, ht, hr, hb = zip(*[l.hull for l in self.lines])
-        return [min(hl), min(ht), max(hr), max(hb)]
-
     def text(self):
         return '\n'.join([l.text() for l in self.lines])
 
-def glom_boxes(boxes, words, tol=0.75):
-    # init state
-    blocks = []
+class Document:
+    def __init__(self):
+        self.blocks = []
 
-    # get inherent scale
+    def __len__(self):
+        return len(self.blocks)
+
+    def __iter__(self):
+        return iter(self.blocks)
+
+    def add(self, box, word, tol=0):
+        # handle empty case
+        if len(self.blocks) == 0:
+            block = Block()
+            block.add(box, word)
+            self.blocks.append(block)
+            return
+
+        # append or create as needed
+        for block in reversed(self.blocks):
+            if block.add(box, word, tol=tol):
+                break
+        else:
+            block = Block()
+            block.add(box, word)
+            self.blocks.append(block)
+
+    def text(self):
+        return '\n\n'.join([b.text() for b in self.blocks])
+
+def glom_boxes(boxes, words, tol=0.75):
+    # get scale
     tboxes = torch.tensor(boxes)
     hscale = (tboxes[:, 3] - tboxes[:, 1]).mean()
     htol = hscale*tol
 
-    for box, wrd in zip(boxes, words):
-        # handle first iteration
-        if len(blocks) == 0:
-            block = Block()
-            block.add(box, wrd)
-            blocks.append(block)
-            continue
+    # create doc
+    doc = Document()
+    for box, word in zip(boxes, words):
+        doc.add(box, word, tol=htol)
 
-        # append or create as needed
-        for block in reversed(blocks):
-            if block.add(box, wrd, tol=htol):
-                break
-        else:
-            block = Block()
-            block.add(box, wrd)
-            blocks.append(block)
-
-    # return blocks
-    return blocks
+    # return doc
+    return doc
 
 class LayoutModel:
     def __init__(self, proc_id='microsoft/layoutlmv3-base'):

@@ -34,20 +34,18 @@ from transformers import LayoutLMv3ImageProcessor, LayoutLMv3TokenizerFast
 ## LayoutLMv3
 ##
 
-class Line:
+class Hull:
     def __init__(self):
-        self.boxes = []
-        self.words = []
         self.hull = None
 
-    def __len__(self):
-        return len(self.boxes)
+    def __iter__(self):
+        return iter(self.hull)
 
-    def add(self, box, word):
-        self.boxes.append(box)
-        self.words.append(word)
+    def __call__(self):
+        return self.hull
 
-        if len(self.boxes) == 1:
+    def add(self, box):
+        if self.hull is None:
             self.hull = box
         else:
             hl, ht, hr, hb = self.hull
@@ -56,6 +54,30 @@ class Line:
                 min(hl, bl), min(ht, bt),
                 max(hr, br), max(hb, bb),
             ]
+
+    def close(self, box, tol=0):
+        hl, ht, hr, hb = self.hull
+        bl, bt, br, bb = box
+        return (
+            bl < hr + tol and
+            br > hl - tol and
+            bt < hb + tol and
+            bb > ht - tol
+        )
+
+class Line:
+    def __init__(self):
+        self.boxes = []
+        self.words = []
+        self.hull = Hull()
+
+    def __len__(self):
+        return len(self.boxes)
+
+    def add(self, box, word):
+        self.boxes.append(box)
+        self.words.append(word)
+        self.hull.add(box)
 
     # is this horizontally consistent with the line
     def aligned(self, box, tol=0):
@@ -70,14 +92,7 @@ class Line:
 
     # is this close to the line in any direction
     def close(self, box, tol=0):
-        hl, ht, hr, hb = self.hull
-        bl, bt, br, bb = box
-        return (
-            bl < hr + tol and
-            br > hl - tol and
-            bt < hb + tol and
-            bb > ht - tol
-        )
+        return self.hull.close(box, tol=tol)
 
     def text(self):
         return ' '.join(self.words)
@@ -85,6 +100,7 @@ class Line:
 class Block:
     def __init__(self):
         self.lines = []
+        self.hull = Hull()
 
     def __len__(self):
         return len(self.lines)
@@ -95,20 +111,27 @@ class Block:
             line = Line()
             line.add(box, word)
             self.lines.append(line)
+            self.hull.add(box)
             return True
 
-        # look for aligned lines
+        # reject if not close to outer hull
+        if not self.hull.close(box, tol=tol):
+            return False
+
+        # add to existing line if aligned
         for line in reversed(self.lines):
             if line.aligned(box, tol=tol):
                 line.add(box, word)
+                self.hull.add(box)
                 return True
 
-        # look for close lines
+        # create new line if close
         for line in reversed(self.lines):
             if line.close(box, tol=tol):
                 line1 = Line()
                 line1.add(box, word)
                 self.lines.append(line1)
+                self.hull.add(box)
                 return True
 
         # no match

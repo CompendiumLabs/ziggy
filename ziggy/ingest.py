@@ -8,14 +8,9 @@ import shutil
 import subprocess
 from tqdm import tqdm
 from pathlib import Path
+from statistics import mean
 from functools import partial
 from itertools import repeat
-
-from nougat import NougatModel
-from nougat.utils.dataset import LazyDataset
-from nougat.utils.device import move_to_device
-from nougat.utils.checkpoint import get_checkpoint
-from nougat.postprocessing import markdown_compatible
 
 import pytesseract
 import fitz as pymupdf
@@ -23,13 +18,115 @@ from PIL import Image
 
 from .utils import groupby_key
 
+# this is fixed
+PDFFIGURES_DPI = 72
+
+##
+## Utils
+##
+
+def rescale_box(box, offset=0, scale=1):
+    ow, oh = offset if type(offset) is tuple else (offset, offset)
+    sw, sh = scale if type(scale) is tuple else (scale, scale)
+    ob, sb = [ow, oh, ow, oh], [sw, sh, sw, sh]
+    return [
+        (o + s * b) for o, s, b in zip(ob, sb, box)
+    ]
+
+##
+## Tesseract
+##
+
+def tesseract_ocr(image, markup=False, config=''):
+    # handle path case
+    if type(image) is str:
+        image = Image.open(image).convert(mode='RGB')
+
+    # run tesseract engine
+    data = pytesseract.image_to_data(image, output_type='dict', config=config)
+    words = data['text']
+    boxes = list(zip(data['left'], data['top'], data['width'], data['height']))
+
+    # get non-empty text boxes
+    istxt = [w.strip() != '' for w in words]
+    words = [w for t, w in zip(istxt, words) if t]
+    boxes = [b for t, b in zip(istxt, boxes) if t]
+
+    # convert boxes to hull format
+    boxes = [(x, y, x+w, y+h) for x, y, w, h in boxes]
+
+    # return results
+    if markup:
+        image = pil_to_tensor(image)
+        boxes = torch.tensor(boxes)
+        return draw_bounding_boxes(image, boxes)
+    else:
+        return boxes, words
+
+##
+## pdffigures2
+##
+
+def detect_figures(pdf_path, dpi=72, timeout=30, verbose=False):
+    # get env config
+    PDFFIGURES_JARPATH = os.environ.get('PDFFIGURES_JARPATH', None)
+    PDFFIGURES_TEMPDIR = os.environ.get('PDFFIGURES_TEMPDIR', '/tmp/pdffigures2')
+
+    # ensure jar path
+    if PDFFIGURES_JARPATH is None:
+        print('PDFFIGURES_JARPATH not set')
+        return
+
+    # ensure output dirs
+    output_dir = Path(PDFFIGURES_TEMPDIR) / 'output'
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    os.makedirs(output_dir)
+
+    # make the call
+    args = dict(stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL) if not verbose else {}
+    process = subprocess.Popen(
+        f'java -jar {PDFFIGURES_JARPATH} -d {output_dir}/ -s {output_dir}/stats.json -q {pdf_path}',
+        shell=True, **args
+    )
+
+    # run with timeout
+    try:
+        exit_code = process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        print(f'pdffigures2 timed out on {pdf_path} ({timeout} seconds)')
+        process.terminate()
+        return False
+
+    # get stats path
+    fname = os.path.basename(pdf_path)
+    base, _ = os.path.splitext(fname)
+    stats_path = output_dir / f'{base}.json'
+
+    # read back results
+    with open(stats_path) as fid:
+        stats = json.load(fid)
+
+    # load in figures
+    figures = []
+    for fig in stats:
+        page = fig['page']
+        cap = fig['caption']
+        bnd = fig['regionBoundary']
+        box = [bnd['x1'], bnd['y1'], bnd['x2'], bnd['y2']]
+        box = rescale_box(box, scale=dpi/PDFFIGURES_DPI)
+        figures.append((page, box, cap))
+
+    # return results
+    return figures
+
 ##
 ## Boxes
 ##
 
 class Hull:
     def __init__(self, hull=None):
-        self.hull = hull
+        self.hull = list(hull) if hull is not None else None
 
     def __len__(self):
         return 4
@@ -66,6 +163,26 @@ class Hull:
             br > hl - tol and
             bt < hb + tol and
             bb > ht - tol
+        )
+
+    def overlaps(self, box):
+        hl, ht, hr, hb = self.hull
+        bl, bt, br, bb = box
+        return (
+            bl < hr and
+            br > hl and
+            bt < hb and
+            bb > ht
+        )
+
+    def contains(self, box):
+        hl, ht, hr, hb = self.hull
+        bl, bt, br, bb = box
+        return (
+            bl > hl and
+            br < hr and
+            bt > ht and
+            bb < hb
         )
 
 class Container:
@@ -152,6 +269,9 @@ class Line(Container):
     def close(self, box, tol=0):
         return self.hull.close(box, tol=tol)
 
+    def data(self):
+        return [(s.box, s.word) for s in self]
+
 class Block(Container):
     def __init__(self):
         super().__init__('\n')
@@ -201,26 +321,31 @@ class Block(Container):
         # no match
         return False
 
+    def data(self):
+        return [bw for l in self for bw in l.data()]
+
 class Figure:
-    def __init__(self, box, cap, img):
+    def __init__(self, box, cap, img, txt):
         self.box = Hull(box)
         self.cap = cap
         self.img = img
+        self.txt = txt
 
     def __repr__(self):
         return f'{self.cap} {self.box}'
 
     @classmethod
     def load(cls, data):
-        box, cap = Hull(data['box']), data['cap']
+        box, cap, txt = Hull(data['box']), data['cap'], data['txt']
         img = Image.frombytes('RGB', data['size'], data['img'])
-        return cls(box, cap, img)
+        return cls(box, cap, img, txt)
 
     def save(self):
         return {
             'box': self.box(),
             'cap': self.cap,
             'img': self.img.tobytes(),
+            'txt': self.txt,
             'size': self.img.size,
         }
 
@@ -259,9 +384,15 @@ class Page(Container):
             block.add(box, word)
             self.append(block)
 
-    def add_figure(self, box, cap, img):
-        fig = Figure(box, cap, img)
+    def add_figure(self, box, cap, img, txt):
+        fig = Figure(box, cap, img, txt)
         self.figures.append(fig)
+
+    def filter(self, box):
+        return [str(b) for b in self if Hull(box).contains(b.hull)]
+
+    def data(self):
+        return [bw for b in self for bw in b.data()]
 
 class Document(Container):
     def __init__(self):
@@ -272,6 +403,52 @@ class Document(Container):
         data = torch.load(path) if type(path) is str else path
         self = cls()
         self.items = [Page.load(p) for p in data['pages']]
+        return self
+
+    @classmethod
+    def from_pdf(cls, path, tol=1, dpi=150, verbose=False):
+        self = cls()
+
+        # detect figures first
+        figures = detect_figures(path, dpi=dpi, verbose=verbose)
+        figs_map = groupby_key(figures, 0)
+
+        # open pdf
+        pdf =  pymupdf.open(path)
+
+        # loop through pages
+        for i, p in enumerate(pdf):
+            # get relevant figs
+            figs = figs_map[i]
+
+            # get page image
+            pix = p.get_pixmap(dpi=dpi)
+            siz = pix.w, pix.h
+
+            # get pages layout
+            img = Image.frombytes('RGB', siz, pix.samples)
+            boxes, words = tesseract_ocr(img)
+
+            # get page scale
+            bl, bt, br, bb = zip(*boxes)
+            hscale = mean(bb) - mean(bt)
+            htol = hscale*tol
+
+            # feed in boxen
+            page = Page()
+            for box, word in zip(boxes, words):
+                page.add(box, word, tol=htol)
+
+            # add figures and append
+            for _, box, cap in figs:
+                fimg = img.crop(box)
+                ftxt = page.filter(box)
+                page.add_figure(box, cap, fimg, ftxt)
+
+            # append page
+            self.add(page)
+
+        # return parsed document
         return self
 
     def save(self, path=None):
@@ -286,202 +463,27 @@ class Document(Container):
     def add(self, page):
         self.append(page)
 
-def glom_boxes(boxes, words, tol=1):
-    # get scale
-    tboxes = torch.tensor(boxes).float()
-    hscale = (tboxes[:, 3] - tboxes[:, 1]).mean()
-    htol = hscale*tol
-
-    # feed in boxen
-    page = Page()
-    for box, word in zip(boxes, words):
-        page.add(box, word, tol=htol)
-
-    # return page
-    return page
-
 ##
-## Layout
+## Interpretation
 ##
 
-class Tesseract:
-    def __init__(self, config=''):
-        self.config = config
+class Interpret:
+    def __init__(self, llm, lvm):
+        self.llm = llm
+        self.lvm = lvm
 
-    def process_image(self, image, markup=False):
-        # handle path case
-        if type(image) is str:
-            image = Image.open(image).convert(mode='RGB')
+    # get full text interpretation for embedding
+    def interpret(self, doc):
+        # store outputs
+        texts = []
 
-        # run tesseract engine
-        data = pytesseract.image_to_data(image, output_type='dict', config=self.config)
-        words = data['text']
-        boxes = list(zip(data['left'], data['top'], data['width'], data['height']))
+        for page in doc:
+            # generate para and fig text
+            ptxt = [str(para) for para in page]
+            ftxt = [fig.txt for fig in page.figures]
 
-        # get non-empty text boxes
-        istxt = [w.strip() != '' for w in words]
-        words = [w for t, w in zip(istxt, words) if t]
-        boxes = [b for t, b in zip(istxt, boxes) if t]
+            # append output
+            texts.append((ptxt, ftxt))
 
-        # convert boxes to hull format
-        boxes = [(x, y, x+w, y+h) for x, y, w, h in boxes]
-
-        # return results
-        if markup:
-            image = pil_to_tensor(image)
-            boxes = torch.tensor(boxes)
-            return draw_bounding_boxes(image, boxes)
-        else:
-            return boxes, words
-
-##
-## pdffigures2
-##
-
-def detect_figures(pdf_path, timeout=30):
-    # get env config
-    PDFFIGURES_JARPATH = os.environ.get('PDFFIGURES_JARPATH', None)
-    PDFFIGURES_TEMPDIR = os.environ.get('PDFFIGURES_TEMPDIR', '/tmp/pdffigures2')
-
-    # ensure jar path
-    if PDFFIGURES_JARPATH is None:
-        print('PDFFIGURES_JARPATH not set')
-        return
-
-    # ensure output dirs
-    output_dir = Path(PDFFIGURES_TEMPDIR) / 'output'
-    if output_dir.exists():
-        shutil.rmtree(output_dir)
-    os.makedirs(output_dir)
-
-    # make the call
-    process = subprocess.Popen(
-        f'java -jar {PDFFIGURES_JARPATH} -m {output_dir}/ -d {output_dir}/ -s {output_dir}/stats.json -q {pdf_path}',
-        shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL
-    )
-
-    # run with timeout
-    try:
-        exit_code = process.wait(timeout=timeout)
-    except subprocess.TimeoutExpired as e:
-        print(f'pdffigures2 timed out on {pdf_path} ({timeout} seconds)')
-        process.terminate()
-        return False
-
-    # get stats path
-    fname = os.path.basename(pdf_path)
-    base, _ = os.path.splitext(fname)
-    stats_path = output_dir / f'{base}.json'
-
-    # read back results
-    with open(stats_path) as fid:
-        stats = json.load(fid)
-
-    # load in figures
-    figures = []
-    for fig in stats:
-        page = fig['page']
-        cap = fig['caption']
-        bnd = fig['regionBoundary']
-        box = [bnd['x1'], bnd['y1'], bnd['x2'], bnd['y2']]
-        img = Image.open(fig['renderURL']).convert(mode='RGB')
-        figures.append((page, box, cap, img))
-
-    # return results
-    return figures
-
-##
-## Nougat
-##
-
-def gen_page_output(prediction, repeat, page_num, skipping=True):
-    # check if model output is faulty
-    if prediction.strip() == '[MISSING_PAGE_POST]':
-        # uncaught repetitions -- most likely empty page
-        return f'\n\n[MISSING_PAGE_EMPTY:{page_num}]\n\n'
-    elif skipping and repeat is not None:
-        if repeat > 0:
-            # If we end up here, it means the output is most likely not complete and was truncated.
-            print(f'Skipping page {page_num} due to repetitions.')
-            return f'\n\n[MISSING_PAGE_FAIL:{page_num}]\n\n'
-        else:
-            # If we end up here, it means the document page is too different from the training domain.
-            # This can happen e.g. for cover pages.
-            return f'\n\n[MISSING_PAGE_EMPTY:{page_num}]\n\n'
-    else:
-        return prediction
-
-class NougatConvert:
-    def __init__(self, model_id='0.1.0-small', bf16=True, cuda=True):
-        checkpoint = get_checkpoint(model_id)
-        self.model = NougatModel.from_pretrained(checkpoint)
-        self.model = move_to_device(self.model, bf16=bf16, cuda=cuda)
-        self.model.eval()
-
-    # convert pdf to markdown text
-    def convert_pdf(self, path, batch_size=8, skipping=True, markdown=True):
-        # load pdf
-        prepare = partial(self.model.encoder.prepare_input, random_padding=False)
-        dataset = LazyDataset(path, prepare)
-        loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
-
-        # document state
-        pages = []
-        page_num = 0
-
-        # iterate over batches
-        for i, (sample, is_last_page) in enumerate(tqdm(loader)):
-            # run inference model
-            results = self.model.inference(image_tensors=sample, early_stopping=skipping)
-            predictions = results['predictions']
-            repetition = results.get('repeat', repeat(None))
-
-            # iterate over batch
-            for pred, reps in zip(predictions, repetition):
-                page_num += 1
-                output = gen_page_output(pred, None, page_num, skipping=skipping)
-                pages.append(markdown_compatible(output) if markdown else output)
-
-        # return full document
-        document = ''.join(pages).strip()
-        document = re.sub(r'\n{3,}', '\n\n', document).strip()
-        return document
-
-##
-## Pipeline
-##
-
-class Ingest:
-    def __init__(self):
-        self.tess = Tesseract()
-
-    # this get the layout for text and figures
-    def segment_pdf(self, pdf_path):
-        # detect figures first
-        figures = detect_figures(pdf_path)
-        figs_map = groupby_key(figures, 0)
-
-        # open pdf
-        pdf =  pymupdf.open(pdf_path)
-
-        # loop through pages
-        doc = Document()
-        for i, p in enumerate(pdf):
-            # get relevant figs
-            figs = figs_map[i]
-
-            # get page image
-            pix = p.get_pixmap(dpi=150)
-            img = Image.frombytes('RGB', [pix.width, pix.height], pix.samples)
-
-            # get pages layout
-            boxes, words = self.tess.process_image(img)
-            page = glom_boxes(boxes, words)
-
-            # add figures and append
-            for _, box, cap, img in figs:
-                page.add_figure(box, cap, img)
-            doc.add(page)
-
-        # return parsed document
-        return doc
+        # return generated        
+        return texts

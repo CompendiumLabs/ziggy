@@ -15,7 +15,7 @@ from .utils import (
     pipeline_threads, batch_generator, batch_indices, cumsum, cumul_bounds,sprint, convert_sentencepice,
     RequestTracker
 )
-from .prompt import prompt_generator
+from .prompt import DEFAULT_LLAMA_SYSTEM
 
 ##
 ## Constants
@@ -150,37 +150,40 @@ def get_gguf_meta_string(model, name, length=1024):
 # this has to take context at creation time
 # NOTE: llama2-70b needs n_gqa=8
 class LlamaCppModel:
-    def __init__(self, model_path, context=2048, n_gpu_layers=100, verbose=False, prompt_type='llama', **kwargs):
+    def __init__(self, model_path, chat_format='llama-2', context=2048, n_gpu_layers=100, verbose=False, **kwargs):
         from llama_cpp import Llama
 
         # store options
+        self.chat_format = chat_format
         self.context = context
-        self.prompt_type = prompt_type
 
         # load llama model
         self.model = Llama(
-            model_path, n_ctx=context, n_gpu_layers=n_gpu_layers, verbose=verbose, **kwargs
+            model_path, chat_format=chat_format, n_ctx=context, n_gpu_layers=n_gpu_layers, verbose=verbose, **kwargs
         )
 
         # get model info
         self.arch = get_gguf_meta_string(self.model, 'general.architecture')
         self.name = get_gguf_meta_string(self.model, 'general.name')
 
-    def generate(self, query, system=None, maxgen=None, temp=1.0, top_k=0, **kwargs):
+    def generate(self, query, system=DEFAULT_LLAMA_SYSTEM, maxgen=None, temp=1.0, top_k=0, **kwargs):
         # get prompt generator
-        gen_prompt = prompt_generator(self.prompt_type, system=system)
-        prompt = gen_prompt(query)
+        messages = [
+            {'role': 'system', 'content': system},
+            {'role': 'user', 'content': query},
+        ]
 
         # construct stream object
-        stream = self.model(
-            prompt, max_tokens=maxgen, stream=True, temperature=temp, top_k=top_k, **kwargs
+        stream = self.model.create_chat_completion(
+            messages=messages, max_tokens=maxgen, stream=True, temperature=temp, top_k=top_k, **kwargs
         )
 
         # return generated tokens
         for i, output in enumerate(stream):
             choice, *_ = output['choices']
-            text = choice['text']
-            yield text
+            delta = choice['delta']
+            if 'content' in delta:
+                yield delta['content']
 
     def igenerate(self, query, **kwargs):
         for s in self.generate(query, **kwargs):

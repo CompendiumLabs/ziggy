@@ -5,6 +5,7 @@ from . import quant
 from . import index
 from . import database
 from . import agent
+from . import ingest
 
 from .llm import HuggingfaceEmbedding, HuggingfaceModel, LlamaCppModel
 from .quant import QuantType, QuantSpec

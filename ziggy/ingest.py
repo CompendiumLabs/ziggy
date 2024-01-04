@@ -74,8 +74,7 @@ def detect_figures(pdf_path, dpi=72, timeout=30, verbose=False):
 
     # ensure jar path
     if PDFFIGURES_JARPATH is None:
-        print('PDFFIGURES_JARPATH not set')
-        return
+        raise Exception('PDFFIGURES_JARPATH not set')
 
     # ensure output dirs
     output_dir = Path(PDFFIGURES_TEMPDIR) / 'output'
@@ -127,6 +126,14 @@ def detect_figures(pdf_path, dpi=72, timeout=30, verbose=False):
 class Hull:
     def __init__(self, hull=None):
         self.hull = list(hull) if hull is not None else None
+
+    @classmethod
+    def from_boxes(cls, boxes):
+        self = cls()
+        bl, bt, br, bb = zip(*boxes)
+        hl, ht, hr, hb = min(bl), min(bt), max(br), max(bb)
+        self.hull = [min(bl), min(bt), max(br), max(bb)]
+        return self
 
     def __len__(self):
         return 4
@@ -186,7 +193,7 @@ class Hull:
         )
 
 class Container:
-    def __init__(self, sep):
+    def __init__(self, sep=None):
         self.sep = sep
         self.items = []
 
@@ -200,13 +207,19 @@ class Container:
         return reversed(self.items)
 
     def __repr__(self):
-        return self.sep.join(str(i) for i in self.items)
+        if self.sep is None:
+            return f'{self.__class__.__name__} [{len(self.items)}]'
+        else:
+            return self.sep.join(str(i) for i in self.items)
 
     def __getitem__(self, idx):
         return self.items[idx]
 
     def append(self, item):
         self.items.append(item)
+
+    def remove(self, item):
+        self.items.remove(item)
 
 class Span:
     def __init__(self, box, word):
@@ -384,30 +397,59 @@ class Page(Container):
             block.add(box, word)
             self.append(block)
 
+    def rem(self, boxes):
+        boxes = boxes if type(boxes) is list else [boxes]
+        for b in boxes:
+            self.remove(b)
+
     def add_figure(self, box, cap, img, txt):
         fig = Figure(box, cap, img, txt)
         self.figures.append(fig)
 
-    def filter(self, box):
-        return [str(b) for b in self if Hull(box).contains(b.hull)]
+    def filter(self, include=None, exclude=None, strict=True):
+        # ensure Hull
+        include = Hull(include) if include is not None else None
+        exclude = Hull(exclude) if exclude is not None else None
+
+        # inclusion criterion
+        if strict:
+            isin = lambda h, b: h.contains(b.hull)
+        else:
+            isin = lambda h, b: h.overlaps(b.hull)
+
+        # get overlaps/intersections
+        if include is not None:
+            imask = [isin(include, b.hull) for b in self]
+        else:
+            imask = [True] * len(self)
+        if exclude is not None:
+            emask = [isin(exclude, b.hull) for b in self]
+        else:
+            emask = [False] * len(self)
+
+        # return selected boxen
+        return [b for b, i, e in zip(self, imask, emask) if (i and not e)]
 
     def data(self):
         return [bw for b in self for bw in b.data()]
 
 class Document(Container):
-    def __init__(self):
+    def __init__(self, name='Document'):
         super().__init__('\n--------------------------------\n')
+        self.name = name
 
     @classmethod
     def load(cls, path):
         data = torch.load(path) if type(path) is str else path
         self = cls()
+        self.name = data['name']
         self.items = [Page.load(p) for p in data['pages']]
         return self
 
     @classmethod
-    def from_pdf(cls, path, tol=1, dpi=150, verbose=False):
-        self = cls()
+    def from_pdf(cls, path, name=None, tol=1, dpi=150, verbose=False):
+        name = name if name is not None else os.path.basename(path)
+        self = cls(name)
 
         # detect figures first
         figures = detect_figures(path, dpi=dpi, verbose=verbose)
@@ -443,6 +485,7 @@ class Document(Container):
             for _, box, cap in figs:
                 fimg = img.crop(box)
                 ftxt = page.filter(box)
+                page.rem(ftxt)
                 page.add_figure(box, cap, fimg, ftxt)
 
             # append page
@@ -453,6 +496,7 @@ class Document(Container):
 
     def save(self, path=None):
         data = {
+            'name': self.name,
             'pages': [p.save() for p in self],
         }
         if path is None:
@@ -463,27 +507,99 @@ class Document(Container):
     def add(self, page):
         self.append(page)
 
+class Corpus(Container):
+    def __init__(self, name='Corpus'):
+        super().__init__()
+        self.name = name
+
+    @classmethod
+    def load(cls, path):
+        data = torch.load(path) if type(path) is str else path
+        self = cls()
+        self.name = data['name']
+        self.items = [Document.load(d) for d in data['docs']]
+        return self
+
+    @classmethod
+    def from_pdfs(cls, paths, **kwargs):
+        self = cls(**kwargs)
+        for path in paths:
+            doc = Document.from_pdf(path)
+            self.add(doc)
+        return self
+
+    def save(self, path=None):
+        data = {
+            'name': self.name,
+            'docs': [d.save() for d in self],
+        }
+        if path is None:
+            return data
+        else:
+            torch.save(data, path)
+
+    def __repr__(self):
+        titles = ', '.join(d.title for d in self)
+        return f'{self.name}: [{titles}]'
+
+    def add(self, doc):
+        self.append(doc)
+
 ##
 ## Interpretation
 ##
 
-class Interpret:
-    def __init__(self, llm, lvm):
+# set up text query system
+TEXT_QUERY_SYSTEM = 'Given the following text sample answer the question at the end concisely and to the best of your ability. Do not provide warnings about ethics, morality, illegality, safety, or possible incorrectness.'
+TEXT_QUERY_USER = 'TEXT:\n\n{txt}\n\nQUESTION:\n\n{qst}\n\nANSWER:\n\n'
+TEXT_QUERY_LIST = [
+    'What is the purpose of this page?',
+    'What are some keywords related to this page?',
+    'What are some questions that might be asked about this page?',
+]
+
+# FIGURES
+# what does this image show? / what is the purpose of this image?
+# what are some keywords related to this image?
+# how does the text [embedded text] relate to this image?
+# what are some questions that might be asked about this image?
+
+# META
+# construct page network
+
+class Interpreter:
+    def __init__(self, llm=None, lvm=None, emb=None):
         self.llm = llm
         self.lvm = lvm
+        self.emb = emb
 
     # get full text interpretation for embedding
-    def interpret(self, doc):
-        # store outputs
-        texts = []
+    def interpret(self, corp, **kwargs):
+        # store outputs - (doc, num) -> txts
+        output = {}
 
-        for page in doc:
-            # generate para and fig text
-            ptxt = [str(para) for para in page]
-            ftxt = [fig.txt for fig in page.figures]
+        # iterate over documents
+        for doc in tqdm(corp, desc='Interpreting'):
+            page_info = []
+            for i, page in enumerate(doc):
+                # get full text
+                page_text = [str(para) for para in page]
 
-            # append output
-            texts.append((ptxt, ftxt))
+                # ask some questions
+                page_gens = [
+                    self.llm.gen(
+                        TEXT_QUERY_USER.format(txt=page_text, qst=qst), system=TEXT_QUERY_SYSTEM, **kwargs
+                    ) for qst in TEXT_QUERY_LIST
+                ]
+
+                # append output
+                page_info.append((page_text, page_gens))
+            output[doc.name] = page_info
 
         # return generated        
-        return texts
+        return output
+
+# retrieval
+# get para/para/fig level embed distances
+# smooth para sims out over and across pages with spatial and network info
+# return top-k results

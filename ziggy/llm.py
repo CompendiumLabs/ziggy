@@ -15,7 +15,7 @@ from .utils import (
     pipeline_threads, batch_generator, batch_indices, cumsum, cumul_bounds,sprint, convert_sentencepice,
     RequestTracker
 )
-from .prompt import DEFAULT_LLAMA_SYSTEM
+from .prompt import DEFAULT_SYSTEM_PROMPT
 
 ##
 ## Constants
@@ -166,7 +166,7 @@ class LlamaCppModel:
         self.arch = get_gguf_meta_string(self.model, 'general.architecture')
         self.name = get_gguf_meta_string(self.model, 'general.name')
 
-    def generate(self, query, system=DEFAULT_LLAMA_SYSTEM, maxgen=None, temp=1.0, top_k=0, **kwargs):
+    def generate(self, query, system=DEFAULT_SYSTEM_PROMPT, maxgen=None, temp=1.0, top_k=0, **kwargs):
         # get prompt generator
         messages = [
             {'role': 'system', 'content': system},
@@ -185,7 +185,18 @@ class LlamaCppModel:
             if 'content' in delta:
                 yield delta['content']
 
-    def igenerate(self, query, **kwargs):
+    def batched(self, queries, system=DEFAULT_SYSTEM_PROMPT, n_parallel=8, maxgen=None, temp=1.0, top_k=0):
+        prompts = [
+            make_llama_prompt(q, prompt_type=self.chat_format, system=system) for q in queries
+        ]
+
+        ### handle actual splitting into batches of size n_parallel
+        return llama_generate_batched(self.model, prompts, n_parallel=n_parallel, max_len=maxgen, top_k=top_k, temp=temp)
+
+    def gen(self, query, **kwargs):
+        return ''.join(self.generate(query, **kwargs)).strip()
+
+    def igen(self, query, **kwargs):
         for s in self.generate(query, **kwargs):
             sprint(s)
 

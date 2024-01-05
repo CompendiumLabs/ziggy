@@ -131,10 +131,9 @@ class TorchVectorIndex:
     def get(self, labels):
         # convert to indices
         labels = [labels] if type(labels) is not list else labels
-        indices = [self.labels.index(l) for l in labels]
+        indices = torch.tensor([self.labels.index(l) for l in labels])
 
         # validate indices
-        size = self.size()
         if (indices == -1).any():
             raise Exception(f'Some labels not found.')
 

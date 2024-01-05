@@ -200,11 +200,14 @@ class QuantizedEmbedding:
     def quantize(self, vec):
         return self.qspec.quantize(vec)
 
+    def dequantize(self, vec):
+        return self.qspec.dequantize(vec)
+
     def __setitem__(self, idx, vec):
         self.data[idx] = self.quantize(vec)
 
     def __getitem__(self, idx):
-        raise NotImplementedError('Need to implement __getitem__ with dequantize')
+        return self.dequantize(self.data[idx])
 
     def zero_(self):
         self.data.zero_()

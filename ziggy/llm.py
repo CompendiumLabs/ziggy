@@ -63,7 +63,7 @@ class LanguageModel:
         return normalize(embed, dim=-1)
 
     # proper python generator variant that uses model.__call__ directly
-    def generate(self, prompt, chat=True, context=2048, maxlen=2048, top_k=10, temp=1.0):
+    def generate(self, prompt, chat=True, context=2048, max_len=2048, top_k=10, temp=1.0):
         # splice in chat instructions
         if chat is not False:
             system_prompt = DEFAULT_SYSTEM_PROMPT if chat is True else chat
@@ -77,7 +77,7 @@ class LanguageModel:
             input_ids = input_ids[:,:context]
 
         # loop until limit and eos token
-        for i in range(maxlen):
+        for i in range(max_len):
             # generate next logits (no grad for memory usage)
             with torch.no_grad():
                 output = self.model(input_ids)
@@ -213,7 +213,7 @@ class LlamaCppModel:
 
 class HuggingfaceEmbedding:
     def __init__(
-        self, model_id=DEFAULT_EMBED, maxlen=None, batch_size=128, queue_size=256,
+        self, model_id=DEFAULT_EMBED, max_len=None, batch_size=128, queue_size=256,
         device='cuda', dtype=torch.float16, onnx=False, save_dir=ONNX_DIR, compile=False
     ):
         from onnxruntime import SessionOptions
@@ -257,12 +257,12 @@ class HuggingfaceEmbedding:
         # get model info
         self.name = model_id
         self.batch_size = batch_size
-        self.maxlen = self.model.config.max_position_embeddings if maxlen is None else maxlen
+        self.max_len = self.model.config.max_position_embeddings if max_len is None else max_len
         self.dims = self.model.config.hidden_size
 
     def tokenize_batch(self, text):
         encode = self.tokenizer(
-            text, max_length=self.maxlen, padding='max_length', truncation=True,
+            text, max_length=self.max_len, padding='max_length', truncation=True,
             return_overflowing_tokens=True, return_tensors='pt'
         )
         return encode.overflow_to_sample_mapping, encode.input_ids, encode.attention_mask
@@ -303,7 +303,7 @@ class HuggingfaceEmbedding:
             # make workers
             results = []
             def loader():
-                yield from batch_generator(iter(text), self.batch_size)
+                yield from batch_generator(text, self.batch_size)
             def tokenizer(texts):
                 return self.tokenize_batch(texts)
             def forwarder(data):
@@ -319,7 +319,7 @@ class HuggingfaceEmbedding:
         else:
             # embed chunks and average
             results = [
-                self.embed_batch(chunk) for chunk in batch_generator(iter(text), self.batch_size)
+                self.embed_batch(chunk) for chunk in batch_generator(text, self.batch_size)
             ]
 
         # unpack offsets and embeds
@@ -348,7 +348,7 @@ DEFAULT_OPENAI_EMBED = 'text-embedding-ada-002'
 openai_config = {
     'text-embedding-ada-002': {
         'dims': 1536,
-        'maxlen': 8191,
+        'max_len': 8191,
         'req_limit': 3_000,
         'tok_limit': 1_000_000,
     },
@@ -356,7 +356,7 @@ openai_config = {
 
 class OpenAIEmbedding:
     def __init__(
-        self, model_id=DEFAULT_OPENAI_EMBED, tokenizer_id=None, dims=None, maxlen=None, batch_size=1024,
+        self, model_id=DEFAULT_OPENAI_EMBED, tokenizer_id=None, dims=None, max_len=None, batch_size=1024,
         dtype=torch.half, device='cuda', tok_limit=None, req_limit=None, timepad=10, **kwargs
     ):
         import tiktoken
@@ -374,7 +374,7 @@ class OpenAIEmbedding:
         # store sizing info
         config = openai_config[model_id]
         self.batch_size = batch_size
-        self.maxlen = config['maxlen'] if maxlen is None else maxlen
+        self.max_len = config['max_len'] if max_len is None else max_len
         self.dims = config['dims'] if dims is None else dims
 
         # get tokenizer
@@ -387,7 +387,7 @@ class OpenAIEmbedding:
         self.requests = RequestTracker((req_limit, tok_limit), 60+timepad)
 
     def truncate_batch(self, text):
-        encs = [e[:self.maxlen] for e in self.tokenizer.encode_batch(text) if len(e) > 0]
+        encs = [e[:self.max_len] for e in self.tokenizer.encode_batch(text) if len(e) > 0]
         text1 = [self.tokenizer.decode(e) for e in encs]
         sizes = [len(e) for e in encs]
         return text1, sizes
@@ -437,7 +437,7 @@ class SeamlessModel:
 
         # store model params
         self.dims = self.translator.model.text_encoder_frontend.model_dim
-        self.maxlen = self.translator.model.text_encoder_frontend.pos_encoder.max_seq_len
+        self.max_len = self.translator.model.text_encoder_frontend.pos_encoder.max_seq_len
 
         if onnx:
             seqs = torch.zeros(1, 1, dtype=torch.int64, device=device)
@@ -498,10 +498,10 @@ class SeamlessModel:
         # encode into input ids
         toks = [token_encoder(s) for s in text]
 
-        # compute sequence lengths and clip to maxlen
+        # compute sequence lengths and clip to max_len
         src = self.translator.collate(toks)
-        seqs = src['seqs'][:,:self.maxlen]
-        seq_lens = src['seq_lens'].clip(max=self.maxlen)
+        seqs = src['seqs'][:,:self.max_len]
+        seq_lens = src['seq_lens'].clip(max=self.max_len)
 
         # return pair
         return seqs, seq_lens

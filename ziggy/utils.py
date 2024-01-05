@@ -66,7 +66,8 @@ def cumul_bounds(seq):
 
 # generate (resolved) batches from generator
 def batch_generator(gen, batch_size):
-    while (batch := list(islice(gen, batch_size))) != []:
+    igen = iter(gen) # to ensure its an iterator
+    while (batch := list(islice(igen, batch_size))) != []:
         yield batch
 
 # get batch indices

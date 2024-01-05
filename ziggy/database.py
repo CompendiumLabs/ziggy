@@ -23,15 +23,15 @@ from .utils import batch_generator, cumul_indices, groupby_idx, list_splitter
 ##
 
 # default paragraph splitter
-def paragraph_splitter(text, delim='\n{2,}', minlen=1, maxlen=None):
+def text_splitter(text, delim, min_len=1, max_len=None):
     if delim is not None:
         paras = [p.strip() for p in re.split(delim, text)]
     else:
         paras = [text]
-    paras = [p for p in paras if len(p) >= minlen]
-    if maxlen is not None:
+    paras = [p for p in paras if len(p) >= min_len]
+    if max_len is not None:
         paras = list(chain.from_iterable(
-            list_splitter(p, maxlen) for p in paras
+            list_splitter(p, max_len) for p in paras
         ))
     return paras
 
@@ -57,32 +57,111 @@ def stream_jsonl(path, maxrows=None):
             yield json.loads(line)
 
 ##
-## generic document database
+## generic text database
 ##
 
-# data storage:
-# chunks: dict {name: [chunk1, chunk2, ...]}
-# cindex: TorchVectorIndex {(name, chunk_idx): vec}
-# dindex: TorchVectorIndex {name: vec}
-class DocumentDatabase:
+# data storage
+# text — {label: text}
+# index — TorchVectorIndex {label: vec}
+class TextDatabase:
     def __init__(
-            self, embed=DEFAULT_EMBED, delim='\n{2,}', minlen=1, maxlen=None, batch_size=4096,
-            model_device='cuda', index_device='cuda', doc_index=True, allocate=True, qspec=Float,
-            dims=None, **kwargs
+            self, embed=DEFAULT_EMBED, embed_device='cuda', index_device='cuda',
+            batch_size=128, allocate=True, dims=None, qspec=Float, **kwargs
         ):
-        # instantiate model and embedding
-        self.embed = HuggingfaceEmbedding(embed, device=model_device) if type(embed) is str else embed
-
-        # set up options
-        self.splitter = lambda s: paragraph_splitter(s, delim=delim, minlen=minlen, maxlen=maxlen)
-        self.batch_size = batch_size
+        # instantiate embedding model
+        if type(embed) is str:
+            self.embed = HuggingfaceEmbedding(embed, device=embed_device, batch_size=batch_size)
+        else:
+            self.embed = embed
 
         # initalize index
         if allocate:
-            dims = self.embed.dims if dims is None else dims
-            self.chunks = {}
-            self.cindex = TorchVectorIndex(dims, device=index_device, qspec=qspec, **kwargs)
-            self.dindex = TorchVectorIndex(dims, device=index_device, qspec=qspec, **kwargs) if doc_index else None
+            self.dims = self.embed.dims if dims is None else dims
+            self.text = {}
+            self.index = TorchVectorIndex(self.dims, device=index_device, qspec=qspec, **kwargs)
+
+    @classmethod
+    def load(cls, path, device='cuda', **kwargs):
+        data = torch.load(path, map_location=device) if type(path) is str else path
+        self = cls(allocate=False, **kwargs)
+        self.text = data['text']
+        self.index = TorchVectorIndex.load(data['index'], device=device)
+        return self
+
+    def save(self, path=None):
+        data = {
+            'text': self.text,
+            'index': self.index.save(),
+        }
+        if path is None:
+            return data
+        else:
+            torch.save(data, path)
+
+    def __len__(self):
+        return len(self.text)
+
+    def embed_text(self, text, threaded=True):
+        return self.embed.embed(text, threaded=threaded, batch_size=self.batch_size)
+
+    def index_text(self, labels, text):
+        self.text.update(zip(labels, text))
+
+    def index_vecs(self, labels, vecs, groups=None):
+        self.index.add(labels, vecs, groups=groups)
+
+    def add(self, labels, text, groups=None, threaded=True):
+        vecs = self.embed.embed(text, threaded=threaded)
+        self.index_text(labels, text)
+        self.index_vecs(labels, vecs, groups=groups)
+        return vecs
+
+    def remove(self, labels):
+        for l in labels:
+            del self.text[l]
+        self.index.remove(labels)
+
+    def clear(self, zero=False):
+        self.text = {}
+        self.index.clear(zero=zero)
+
+    def get_text(self, labels):
+        if type(labels) is not list:
+            labels = [labels]
+        return [self.text[l] for l in labels]
+
+    def get_vecs(self, labels):
+        return self.index.get(labels)
+
+    def search(self, query, groups=None, top_k=10, cutoff=-torch.inf, return_simil=False):
+        qvec = self.embed.embed(query).squeeze() if type(query) is str else query
+        labs, sims = self.index.search(qvec, top_k, groups=groups)
+        match = [(l, v) for l, v in zip(labs, sims.tolist()) if v > cutoff]
+        order = sorted(match, key=itemgetter(1))
+        return order if return_simil else [l for l, v in order]
+
+##
+## document oriented database
+##
+
+# labels: [name, idx]
+# dindex: TorchVectorIndex {name: vec}
+class DocumentDatabase(TextDatabase):
+    def __init__(
+        self, index_device='cuda', allocate=True, dims=None, qspec=Float,
+        delim='\n', min_len=1, max_len=None, **kwargs
+    ):
+        # init core text database
+        super().__init__(
+            index_device=index_device, allocate=allocate, dims=dims, qspec=qspec, **kwargs
+        )
+
+        # set up document parsing
+        self.splitter = lambda s: text_splitter(s, delim, min_len=min_len, max_len=max_len)
+
+        # possibly allocated document index
+        if allocate:
+            self.dindex = TorchVectorIndex(self.dims, device=index_device, qspec=qspec)
 
     @classmethod
     def from_jsonl(
@@ -92,7 +171,7 @@ class DocumentDatabase:
         self = cls(**kwargs)
         lines = stream_jsonl(path, maxrows=maxrows)
         for i, batch in enumerate(batch_generator(lines, doc_batch)):
-            self.index_docs([
+            self.add_docs([
                 (row[name_col], row[text_col]) for row in batch
             ], threaded=threaded)
             if progress:
@@ -100,119 +179,55 @@ class DocumentDatabase:
         return self
 
     @classmethod
-    def load(cls, path, device='cuda', **kwargs):
-        data = torch.load(path, map_location=device) if type(path) is str else path
-        self = cls(allocate=False, **kwargs)
-        self.chunks = data['chunks']
-        self.cindex = TorchVectorIndex.load(data['cindex'], device=device)
-        self.dindex = TorchVectorIndex.load(data['dindex'], device=device) if 'dindex' in data else None
+    def load(cls, path, index_device='cuda', **kwargs):
+        self = super().load(data, index_device=index_device, **kwargs)
+        self.dindex = TorchVectorIndex.load(data['dindex'], device=index_device)
         return self
 
     def save(self, path=None):
-        data = {
-            'chunks': self.chunks,
-            'cindex': self.cindex.save(),
-        }
-        if self.dindex is not None:
-            data['dindex'] = self.dindex.save()
+        data = super().save()
+        data['dindex'] = self.dindex.save()
         if path is None:
             return data
         else:
             torch.save(data, path)
 
-    def process_docs(self, texts):
-        # split into chunks dict
-        targ = texts.items() if type(texts) is dict else texts
+    def process_docs(self, docs):
+        targ = docs.items() if type(docs) is dict else docs
         chunks = {k: self.splitter(v) for k, v in targ}
-        chunks = {k: v for k, v in chunks.items() if len(v) > 0}
-        return chunks
+        return {k: v for k, v in chunks.items() if len(v) > 0}
 
-    def embed_chunks(self, chunks, threaded=True):
-        # assess chunk information
-        nchunks = sum([len(c) for c in chunks.values()])
-        nbatch = int(ceil(nchunks/self.batch_size))
+    def index_chunks(self, chunks, threaded=True):
+        # convert to flat and add
+        labels = [(k, i) for k, v in chunks.items() for i in range(len(v))]
+        text = list(chain.from_iterable(chunks.values()))
+        groups = [d for d, _ in labels]
+        vecs = self.add(labels, text, groups=groups, threaded=threaded)
 
-        # embed chunks with chosen batch_size
-        chunk_iter = chain(*chunks.values())
-        embeds = torch.cat([
-            self.embed.embed(list(islice(chunk_iter, self.batch_size)), threaded=threaded) for _ in range(nbatch)
-        ], dim=0)
+        # add aggregated document embeddings
+        sizes = [len(v) for v in chunks.values()]
+        dvecs = normalize(torch.stack([
+            vecs[i:j,:].mean(dim=0) for i, j in cumul_indices(sizes)
+        ], dim=0), dim=-1)
+        self.dindex.add(list(chunks), dvecs)
 
-        return embeds
-
-    def index_embeds(self, chunks, embeds):
-        # assess chunk information
-        chunk_sizes = [len(c) for c in chunks.values()]
-        nchunks = sum(chunk_sizes)
-
-        # get names and labels
-        labels = [(n, j) for n, s in zip(chunks, chunk_sizes) for j in range(s)]
-        groups = [n for n, _ in labels]
-
-        # update chunks and add to index
-        self.chunks.update(chunks)
-        self.cindex.add(labels, embeds, groups=groups)
-
-        # make document level embeddings
-        if self.dindex is not None:
-            docemb = normalize(torch.stack([
-                embeds[i:j,:].mean(dim=0) for i, j in cumul_indices(chunk_sizes)
-            ], dim=0), dim=-1)
-            self.dindex.add(list(chunks), docemb)
-
-    def index_docs(self, texts, threaded=True):
+    def add_docs(self, texts, threaded=True):
         chunks = self.process_docs(texts)
-        embeds = self.embed_chunks(chunks, threaded=threaded)
-        self.index_embeds(chunks, embeds)
+        self.index_chunks(chunks, threaded=threaded)
 
     def remove_docs(self, names):
-        # remove from chunk dict
-        for name in names:
-            del self.chunks[name]
-
         # remove from index
-        self.cindex.remove(func=lambda x: x[0] in names)
-        if self.dindex is not None:
-            self.dindex.remove(labs=names)
+        labels = [(n, i) for n, i in self.text if n in names]
+        self.remove(labels)
 
-    def clear(self, zero=False):
-        self.chunks = {}
-        self.cindex.clear(zero=zero)
+        # remove from document index
         if self.dindex is not None:
-            self.dindex.clear(zero=zero)
+            self.dindex.remove(names)
 
-    def search(self, query, max_docs=25, max_chunks=10, cluster=True, diffuse=None, cutoff=-torch.inf):
-        # embed query string
+    def search_docs(self, query, top_d=25, **kwargs):
         qvec = self.embed.embed(query).squeeze()
-
-        # search document index first
-        if cluster:
-            docs = self.dindex.search(qvec, max_docs, return_simil=False)
-        else:
-            docs = None
-
-        # search within matching documents
-        labs, sims = self.cindex.search(qvec, max_chunks, groups=docs)
-
-        # introduce kernel diffusion of similarity
-        if diffuse is not None:
-            pass
-
-        # extract matched labels with cutoff
-        match = [l for l, v in zip(labs, sims.tolist()) if v > cutoff]
-
-        # return if no good matches
-        if len(match) == 0:
-            return {}
-
-        # group by document
-        docs, idxs = zip(*match)
-        text = {
-            k: [self.chunks[k][i] for i in v] for k, v in groupby_idx(idxs, docs).items()
-        }
-
-        # return text
-        return text
+        docs = self.dindex.search(qvec, top_d, return_simil=False)
+        return self.search(qvec, groups=docs, **kwargs)
 
 ##
 ## filesystem interface
@@ -261,7 +276,7 @@ class FilesystemDatabase(DocumentDatabase):
     def get_mtime(self, name):
         return os.path.getmtime(self.path / name)
 
-    def get_text(self, name):
+    def get_doc(self, name):
         return load_document(self.path / name)
 
     def reindex(self, names=None):
@@ -271,8 +286,8 @@ class FilesystemDatabase(DocumentDatabase):
         else:
             self.remove_docs(names=names)
         self.times = {n: self.get_mtime(n) for n in names}
-        texts = [(n, self.get_text(n)) for n in names]
-        self.index_docs([(n, t) for n, t in texts if t is not None])
+        texts = [(n, self.get_doc(n)) for n in names]
+        self.add_docs([(n, t) for n, t in texts if t is not None])
 
     def refresh(self, names=None):
         names = self.get_names() if names is None else names

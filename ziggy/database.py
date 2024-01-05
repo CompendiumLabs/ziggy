@@ -16,7 +16,7 @@ from torch.nn.functional import normalize
 from .llm import DEFAULT_EMBED, HuggingfaceEmbedding
 from .index import TorchVectorIndex
 from .quant import Float
-from .utils import batch_generator, cumul_indices, groupby_idx, string_splitter
+from .utils import batch_generator, cumul_indices, groupby_idx, list_splitter
 
 ##
 ## Utils
@@ -31,7 +31,7 @@ def paragraph_splitter(text, delim='\n{2,}', minlen=1, maxlen=None):
     paras = [p for p in paras if len(p) >= minlen]
     if maxlen is not None:
         paras = list(chain.from_iterable(
-            string_splitter(p, maxlen) for p in paras
+            list_splitter(p, maxlen) for p in paras
         ))
     return paras
 
@@ -125,7 +125,6 @@ class DocumentDatabase:
         targ = texts.items() if type(texts) is dict else texts
         chunks = {k: self.splitter(v) for k, v in targ}
         chunks = {k: v for k, v in chunks.items() if len(v) > 0}
-        # chunks = {k: [f'{k}: {c}' for c in v] for k, v in chunks.items()}
         return chunks
 
     def embed_chunks(self, chunks, threaded=True):

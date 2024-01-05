@@ -27,7 +27,7 @@ def make_llama_prompt(query, prompt_type='llama-2', system=DEFAULT_SYSTEM_PROMPT
         raise ValueError(f'unsupported prompt type: {prompt_type}')
 
     # execute the handler
-    return maker({
+    return maker([
         {'role': 'system', 'content': system},
         {'role': 'user', 'content': query},
-    })
+    ]).prompt

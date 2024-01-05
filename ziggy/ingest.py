@@ -539,8 +539,8 @@ class Corpus(Container):
             torch.save(data, path)
 
     def __repr__(self):
-        titles = ', '.join(d.title for d in self)
-        return f'{self.name}: [{titles}]'
+        names = ', '.join(d.name for d in self)
+        return f'{self.name}: [{names}]'
 
     def add(self, doc):
         self.append(doc)
@@ -574,26 +574,31 @@ class Interpreter:
         self.emb = emb
 
     # get full text interpretation for embedding
-    def interpret(self, corp, **kwargs):
-        # store outputs - (doc, num) -> txts
-        output = {}
-
+    def interpret(self, corp, idx, **kwargs):
         # iterate over documents
-        for doc in tqdm(corp, desc='Interpreting'):
-            page_info = []
+        for doc in corp:
+            print(doc)
+
+            # loop over pages
             for i, page in enumerate(doc):
                 # get full text
                 page_text = [str(para) for para in page]
 
                 # ask some questions
-                page_gens = [
-                    self.llm.gen(
-                        TEXT_QUERY_USER.format(txt=page_text, qst=qst), system=TEXT_QUERY_SYSTEM, **kwargs
-                    ) for qst in TEXT_QUERY_LIST
-                ]
+                page_queries = [TEXT_QUERY_USER.format(txt=page_text, qst=qst) for qst in TEXT_QUERY_LIST]
+                page_gens = self.llm.parallel(page_queries, system=TEXT_QUERY_SYSTEM, **kwargs)
+
+                # embed ressults
+                vecs_text = self.emb.embed(page_text)
+                vecs_queries = self.emb.embed(page_queries)
 
                 # append output
-                page_info.append((page_text, page_gens))
+                page_labs, page_vecs = zip(*[
+                    ((doc.name, i, j, 'txt'), txt) for j, txt in enumerate(vecs_text)
+                ] + [
+                    ((doc.name, i, j, 'gen'), gen) for j, gen in enumerate(vecs_gens)
+                ])
+                idx.add({'text': page_text, 'gens': page_gens})
             output[doc.name] = page_info
 
         # return generated        

@@ -83,7 +83,7 @@ def split_list(vals, sizes):
     return [vals[i:j] for i, j in cumul_indices(sizes)]
 
 # split text into chunks
-def string_splitter(text, maxlen):
+def list_splitter(text, maxlen):
     for i, j in batch_indices(len(text), maxlen):
         yield text[i:j]
 

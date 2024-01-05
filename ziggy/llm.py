@@ -11,11 +11,14 @@ from torch.nn.functional import normalize
 from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM, AutoConfig, BitsAndBytesConfig
 from sentencepiece import SentencePieceProcessor
 
+from llama_cpp import Llama, LLAMA_DEFAULT_SEED, llama_model_meta_val_str
+
 from .utils import (
     pipeline_threads, batch_generator, batch_indices, cumsum, cumul_bounds,sprint, convert_sentencepice,
-    RequestTracker
+    RequestTracker, list_splitter
 )
-from .prompt import DEFAULT_SYSTEM_PROMPT
+from .prompt import DEFAULT_SYSTEM_PROMPT, make_llama_prompt
+from .parallel import llama_generate_parallel
 
 ##
 ## Constants
@@ -142,7 +145,6 @@ class HuggingfaceModel(LanguageModel):
 
 def get_gguf_meta_string(model, name, length=1024):
     from ctypes import create_string_buffer
-    from llama_cpp import llama_model_meta_val_str
     buf = create_string_buffer(bytes(), length)
     ret = llama_model_meta_val_str(model.model, name.encode('utf-8'), buf, length)
     return buf.raw[:ret].decode('utf-8')
@@ -151,7 +153,6 @@ def get_gguf_meta_string(model, name, length=1024):
 # NOTE: llama2-70b needs n_gqa=8
 class LlamaCppModel:
     def __init__(self, model_path, chat_format='llama-2', context=2048, n_gpu_layers=100, verbose=False, **kwargs):
-        from llama_cpp import Llama
 
         # store options
         self.chat_format = chat_format
@@ -185,13 +186,19 @@ class LlamaCppModel:
             if 'content' in delta:
                 yield delta['content']
 
-    def batched(self, queries, system=DEFAULT_SYSTEM_PROMPT, n_parallel=8, maxgen=None, temp=1.0, top_k=0):
+    def parallel(
+        self, queries, system=DEFAULT_SYSTEM_PROMPT, n_parallel=8, max_len=2048,
+        temp=1.0, top_k=0, top_p=1.0, seed=LLAMA_DEFAULT_SEED, verbose=False
+    ):
         prompts = [
             make_llama_prompt(q, prompt_type=self.chat_format, system=system) for q in queries
         ]
-
-        ### handle actual splitting into batches of size n_parallel
-        return llama_generate_batched(self.model, prompts, n_parallel=n_parallel, max_len=maxgen, top_k=top_k, temp=temp)
+        return sum([
+            llama_generate_parallel(
+                self.model.model, ps, max_len=max_len, temp=temp,
+                top_k=top_k, top_p=top_p, seed=seed, verbose=verbose
+            ) for ps in list_splitter(prompts, n_parallel)
+        ], [])
 
     def gen(self, query, **kwargs):
         return ''.join(self.generate(query, **kwargs)).strip()

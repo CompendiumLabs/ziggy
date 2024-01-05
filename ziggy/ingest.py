@@ -571,38 +571,30 @@ class Interpreter:
     def __init__(self, llm=None, lvm=None, emb=None):
         self.llm = llm
         self.lvm = lvm
-        self.emb = emb
 
     # get full text interpretation for embedding
-    def interpret(self, corp, idx, **kwargs):
+    def interpret(self, corp, db, **kwargs):
         # iterate over documents
         for doc in corp:
-            print(doc)
+            print(doc.name)
 
             # loop over pages
             for i, page in enumerate(doc):
                 # get full text
-                page_text = [str(para) for para in page]
+                page_txts = [str(p) for p in page]
+                page_full = '\n\n'.join(page_txts)
 
                 # ask some questions
-                page_queries = [TEXT_QUERY_USER.format(txt=page_text, qst=qst) for qst in TEXT_QUERY_LIST]
-                page_gens = self.llm.parallel(page_queries, system=TEXT_QUERY_SYSTEM, **kwargs)
+                page_quer = [TEXT_QUERY_USER.format(txt=page_full, qst=qst) for qst in TEXT_QUERY_LIST]
+                page_gens = self.llm.parallel(page_quer, system=TEXT_QUERY_SYSTEM, **kwargs)
 
-                # embed ressults
-                vecs_text = self.emb.embed(page_text)
-                vecs_queries = self.emb.embed(page_queries)
+                # generate labels
+                labs_txts = [(doc.name, i, j, 'txt') for j in range(len(page_txts))]
+                labs_gens = [(doc.name, i, j, 'gen') for j in range(len(page_gens))]
 
-                # append output
-                page_labs, page_vecs = zip(*[
-                    ((doc.name, i, j, 'txt'), txt) for j, txt in enumerate(vecs_text)
-                ] + [
-                    ((doc.name, i, j, 'gen'), gen) for j, gen in enumerate(vecs_gens)
-                ])
-                idx.add({'text': page_text, 'gens': page_gens})
-            output[doc.name] = page_info
-
-        # return generated        
-        return output
+                # add to database
+                db.add(labs_txts, page_txts)
+                db.add(labs_gens, page_gens)
 
 # retrieval
 # get para/para/fig level embed distances

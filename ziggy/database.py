@@ -137,7 +137,7 @@ class TextDatabase:
         qvec = self.embed.embed(query).squeeze() if type(query) is str else query
         labs, sims = self.index.search(qvec, top_k, groups=groups)
         match = [(l, v) for l, v in zip(labs, sims.tolist()) if v > cutoff]
-        order = sorted(match, key=itemgetter(1))
+        order = sorted(match, key=itemgetter(1), reverse=True)
         return order if return_simil else [l for l, v in order]
 
 ##

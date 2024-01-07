@@ -86,6 +86,10 @@ def llama_generate_parallel(model, prompts, max_len=256, seed=1234, stream=False
     # we use this object to submit token data for decoding
     batch = llama_cpp.llama_batch_init(n_parallel, 0, 1)
 
+    ### TODO: give longest prefix processing another shot. run through it on one stream first
+    ### then copy it to other kv_caches. look up how kv_cache works with transformers. should
+    ### work well given a common document is prepended on these queries.
+
     # remember the batch index of the last token for each parallel sequence
     streams = [''] * n_parallel
     i_batch = [None] * n_parallel

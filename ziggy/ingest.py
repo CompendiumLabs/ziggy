@@ -17,6 +17,7 @@ import fitz as pymupdf
 from PIL import Image
 
 from .utils import groupby_key
+from .database import TextDatabase
 
 # this is fixed
 PDFFIGURES_DPI = 72
@@ -567,8 +568,9 @@ TEXT_QUERY_LIST = [
 # META
 # construct page network
 
-class Interpreter:
-    def __init__(self, llm=None, lvm=None, emb=None):
+class PageDatabase(TextDatabase):
+    def __init__(self, llm=None, lvm=None, emb=None, **kwargs):
+        super().__init__(emb=emb, **kwargs)
         self.llm = llm
         self.lvm = lvm
 
@@ -593,8 +595,8 @@ class Interpreter:
                 labs_gens = [(doc.name, i, j, 'gen') for j in range(len(page_gens))]
 
                 # add to database
-                db.add(labs_txts, page_txts)
-                db.add(labs_gens, page_gens)
+                self.add(labs_txts, page_txts)
+                self.add(labs_gens, page_gens)
 
 # retrieval
 # get para/para/fig level embed distances

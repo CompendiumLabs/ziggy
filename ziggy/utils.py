@@ -12,16 +12,6 @@ import time
 ## pure play python
 ##
 
-# printer for streaming
-def sprint(s):
-    print(s, end='', flush=True)
-
-# print iterator while streaming
-def tee(iterable):
-    for item in iterable:
-        sprint(item)
-        yield item
-
 # mostly for reallocations
 def next_power_of_2(x):
     return pow(2, round(ceil(log2(x))))
@@ -35,15 +25,6 @@ def allow_list(func):
         if rets is not None:
             return rets if many else rets[0]
     return wrapper
-
-# need to sort first for true groupby
-def groupby_key(vals, key):
-    if type(key) is int:
-        key = itemgetter(key)
-    tups = sorted(vals, key=key)
-    return {
-        k: list(v) for k, v in groupby(tups, key=key)
-    }
 
 # group by separate index
 def groupby_idx(vals, grps):
@@ -88,12 +69,6 @@ def list_splitter(text, maxlen):
     for i, j in batch_indices(len(text), maxlen):
         yield text[i:j]
 
-# convert sentencepiece tokens to text
-def convert_sentencepice(toks):
-    return ''.join([
-        tok.replace('▁', ' ').replace('<0x0A>', '\n') for tok in toks
-    ])
-
 ##
 ## importing
 ##
@@ -132,66 +107,6 @@ class IndexDict(dict):
     @allow_list
     def idx(self, keys):
         return [self[k] for k in keys]
-
-class OrderedSet(list):
-    def __init__(self, data=None):
-        data = [] if data is None else data
-        super().__init__(data)
-        self._set = set(data)
-
-    @classmethod
-    def load(cls, data):
-        return cls(data)
-
-    def save(self):
-        return list(self)
-
-    def isdisjoint(self, keys):
-        return self._set.isdisjoint(keys)
-
-    def intersection(self, keys):
-        return self._set.intersection(keys)
-
-    def extend(self, keys):
-        if not self.isdisjoint(keys):
-            raise ValueError('Trying to add existing keys')
-        self._set.update(keys)
-        super().extend(keys)
-
-class Bundle(dict):
-    def __init__(self, *args, **kwargs):
-        super().__init__()
-        for d in args + (kwargs,):
-            self.update(d)
-
-    @classmethod
-    def from_tree(cls, tree):
-        if isinstance(tree, dict):
-            return cls([(k, cls.from_tree(v)) for k, v in tree.items()])
-        else:
-            return tree
-
-    @classmethod
-    def from_toml(cls, path):
-        return cls.from_tree(toml.load(path))
-
-    def __repr__(self):
-        return '\n'.join([f'{k} = {v}' for k, v in self.items()])
-
-    def keys(self):
-        return sorted(super().keys())
-
-    def items(self):
-        return sorted(super().items(), key=itemgetter(0))
-
-    def values(self):
-        return [k for k, _ in self.items()]
-
-    def __getattr__(self, key):
-        return self[key]
-    
-    def __setattr__(self, key, value):
-        self[key] = value
 
 ##
 ## request tracking

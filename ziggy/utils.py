@@ -60,10 +60,6 @@ def cumul_indices(lengths):
     sums = cumsum(lengths)
     return [(i, j) for i, j in zip(sums[:-1], sums[1:])]
 
-# break up a list into cumulative indices
-def split_list(vals, sizes):
-    return [vals[i:j] for i, j in cumul_indices(sizes)]
-
 # split text into chunks
 def list_splitter(text, maxlen):
     for i, j in batch_indices(len(text), maxlen):

@@ -6,17 +6,17 @@ import json
 import torch
 import mimetypes
 
-from math import ceil, inf
-from itertools import chain, islice
+from math import inf
+from itertools import chain
 from operator import itemgetter
 from pathlib import Path
 from glob import glob
 from torch.nn.functional import normalize
 
-from .llm import DEFAULT_EMBED, HuggingfaceEmbedding
+from .embed import HuggingfaceEmbedding, DEFAULT_EMBED
 from .index import TorchVectorIndex
 from .quant import Float
-from .utils import batch_generator, cumul_indices, groupby_idx, list_splitter
+from .utils import batch_generator, cumul_indices, list_splitter
 
 ##
 ## Utils

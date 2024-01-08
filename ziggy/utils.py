@@ -5,7 +5,6 @@ from itertools import chain, islice, accumulate, groupby
 from operator import itemgetter
 from threading import Thread, Event
 from queue import Queue, Empty
-import toml
 import time
 
 ##
@@ -103,6 +102,31 @@ class IndexDict(dict):
     @allow_list
     def idx(self, keys):
         return [self[k] for k in keys]
+
+class OrderedSet(list):
+    def __init__(self, data=None):
+        data = [] if data is None else data
+        super().__init__(data)
+        self._set = set(data)
+
+    @classmethod
+    def load(cls, data):
+        return cls(data)
+
+    def save(self):
+        return list(self)
+
+    def isdisjoint(self, keys):
+        return self._set.isdisjoint(keys)
+
+    def intersection(self, keys):
+        return self._set.intersection(keys)
+
+    def extend(self, keys):
+        if not self.isdisjoint(keys):
+            raise ValueError('Trying to add existing keys')
+        self._set.update(keys)
+        super().extend(keys)
 
 ##
 ## request tracking

@@ -10,8 +10,8 @@ from glob import glob
 import torch
 from mteb import MTEB
 
-from llm import HuggingfaceEmbedding
-from database import stream_jsonl, paragraph_splitter, DocumentDatabase
+from embed import HuggingfaceEmbedding
+from database import stream_jsonl, text_splitter, DocumentDatabase
 from quant import Half, Float, QuantType
 
 TASKS_CQAD = [
@@ -31,7 +31,7 @@ def task_split(task):
 # load jsonl chunks directly
 def load_data(path, delim='\n', minlen=100, nrows=None):
     docs = [line['text'] for line in stream_jsonl(path, maxrows=nrows)]
-    chunks = list(chain(*[paragraph_splitter(doc, delim=delim, minlen=minlen) for doc in docs]))
+    chunks = list(chain(*[text_splitter(doc, delim, min_len=min_len) for doc in docs]))
     return chunks
 
 def profile_embed(model, path, maxlen=256, delim='\n', minlen=100, maxrows=None, onnx=True, compile=False):

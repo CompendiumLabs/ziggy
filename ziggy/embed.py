@@ -6,11 +6,16 @@ from pathlib import Path
 import torch
 from torch.nn.functional import normalize
 from transformers import AutoTokenizer, AutoModel
-from sentencepiece import SentencePieceProcessor
 
 from .utils import (
     pipeline_threads, batch_generator, batch_indices, cumsum, cumul_bounds, RequestTracker
 )
+
+##
+## Constants
+##
+
+DEFAULT_EMBED = 'TaylorAI/bge-micro-v2'
 
 ##
 ## Embeddings
@@ -19,11 +24,15 @@ from .utils import (
 class HuggingfaceEmbedding:
     def __init__(
         self, model_id=DEFAULT_EMBED, max_len=None, batch_size=128, queue_size=256,
-        device='cuda', dtype=torch.float16, onnx=False, save_dir=ONNX_DIR, compile=False
+        device='cuda', dtype=torch.float16, onnx=False, save_dir=None, compile=False
     ):
         from onnxruntime import SessionOptions
         from optimum.onnxruntime import ORTModelForFeatureExtraction, ORTOptimizer
         from optimum.onnxruntime.configuration import OptimizationConfig
+
+        # get env config
+        ONNX_DIR = os.environ.get('ZIGGY_ONNX_DIR', 'onnx')
+        save_dir = save_dir if save_dir is not None else ONNX_DIR
 
         # runtime options
         self.device = device

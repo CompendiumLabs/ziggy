@@ -45,13 +45,13 @@ class TorchVectorIndex:
             'groups': self.groups,
         }
 
-    def size(self):
+    def __len__(self):
         return len(self.labels)
 
     def expand(self, size, power=False):
         if power:
             size = next_power_of_2(size)
-        if size > self.values.size():
+        if size > len(self.values):
             self.values.resize(size)
             resize_alloc(self.groups, size)
 
@@ -103,7 +103,7 @@ class TorchVectorIndex:
             ]))
 
             # expand size if needed
-            nlabels0 = self.size()
+            nlabels0 = len(self)
             nlabels1 = nlabels0 + len(novel)
             self.expand(nlabels1, power=True)
 
@@ -113,7 +113,7 @@ class TorchVectorIndex:
             self.groups[nlabels0:nlabels1] = gids[xlocs]
 
     def remove(self, labs=None, func=None):
-        size = self.size()
+        size = len(self)
         labs = [l for l in self.labels if func(l)] if func is not None else labs
         for lab in self.labels.intersection(labs):
             idx = self.labels.index(lab)
@@ -146,7 +146,7 @@ class TorchVectorIndex:
         indices = torch.tensor(indices, device=self.device, dtype=torch.int32)
 
         # handle negative indices
-        size = self.size()
+        size = len(self)
         indices = torch.where(indices < 0, indices + size, indices)
 
         # validate indices
@@ -156,31 +156,31 @@ class TorchVectorIndex:
         # return values
         return self.values[indices]
 
-    def search(self, vecs, k, groups=None, return_simil=True):
+    def group_mask(self, groups=None):
+        size = len(self)
+        if groups is None:
+            return size
+        else:
+            ids = torch.tensor(self.grpids.idx(groups), device=self.device, dtype=torch.int32)
+            sel = torch.isin(self.groups[:size], ids)
+            return torch.nonzero(sel).squeeze()
+
+    def search(self, vecs, top_k=10, groups=None, return_simil=True):
         # allow for single vec
         squeeze = vecs.ndim == 1
         if squeeze:
             vecs = vecs.unsqueeze(0)
 
-        # clamp k to max size
-        num = self.size()
-        k1 = min(k, num)
-
         # get compare values
-        if groups is None:
-            idx = num
-            labs = self.labels
-        else:
-            ids = torch.tensor(self.grpids.idx(groups), device=self.device, dtype=torch.int32)
-            sel = torch.isin(self.groups[:num], ids)
-            idx = torch.nonzero(sel).squeeze()
-            labs = [self.labels[i] for i in idx]
+        mask = self.group_mask(groups)
+        labs = [self.labels[i] for i in mask] if groups is not None else self.labels
 
         # compute similarity matrix
-        sims = self.values.similarity(vecs, mask=idx)
+        sims = self.values.similarity(vecs, mask=mask)
 
         # get top results
-        tops = sims.topk(k1)
+        top_k1 = min(top_k, len(self))
+        tops = sims.topk(top_k1)
         klab = [[labs[i] for i in row] for row in tops.indices]
         kval = tops.values
 
@@ -191,11 +191,11 @@ class TorchVectorIndex:
         # return labels/simils
         return (klab, kval) if return_simil else klab
 
-    def simil(self, vecs, mask=None):
-        mask = self.size() if mask is None else mask
+    def similarity(self, vecs, groups=None):
         vecs = torch.atleast_2d(vecs)
+        mask = self.group_mask(groups)
         sims = self.values.similarity(vecs, mask=mask)
-        return sims.squeeze()
+        return sims.squeeze(0)
 
 ##
 ## FAISS
@@ -216,7 +216,7 @@ class FaissIndex:
             res = faiss.StandardGpuResources()
             self.values = faiss.index_cpu_to_gpu(res, 0, self.values)
 
-    def size(self):
+    def __len__(self):
         return len(self.labels)
 
     def load(self, path):
@@ -227,7 +227,7 @@ class FaissIndex:
     def save(self, path):
         data = {
             'labels': self.labels,
-            'values': self.values.reconstruct_n(0, self.size())
+            'values': self.values.reconstruct_n(0, len(self))
         }
         if path is not None:
             torch.save(data, path)
@@ -247,7 +247,7 @@ class FaissIndex:
             raise Exception(f'Adding existing labels not supported.')
 
         # construct label ids
-        size0 = self.size()
+        size0 = len(self)
         size1 = size0 + nlabs
         ids = torch.arange(size0, size1)
 

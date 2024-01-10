@@ -46,8 +46,8 @@ def profile_embed(model, path, maxlen=256, delim='\n', minlen=100, maxrows=None,
     delta = time.time() - start
 
     # get document stats
-    ndocs = db.dindex.size()
-    nchunks = db.cindex.size()
+    ndocs = len(db.dindex)
+    nchunks = len(db.cindex)
     speed = nchunks/delta
 
     # get memory stats

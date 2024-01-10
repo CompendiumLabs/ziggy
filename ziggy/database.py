@@ -111,6 +111,12 @@ class TextDatabase:
         self.index.add(labels, vecs, groups=groups)
 
     def add(self, labels, text, groups=None, threaded=True):
+        # check for empty
+        assert(len(labels) == len(text))
+        if len(labels) == 0:
+            return
+
+        # embed and index
         vecs = self.embed.embed(text, threaded=threaded)
         self.index_text(labels, text)
         self.index_vecs(labels, vecs, groups=groups)
@@ -133,9 +139,21 @@ class TextDatabase:
     def get_vecs(self, labels):
         return self.index.get(labels)
 
+    def embed_text(self, text):
+        return self.embed.embed(text).squeeze() if type(text) is str else text
+
+    def similarity(self, text, groups=None, return_labels=False):
+        vecs = self.embed_text(text)
+        sims = self.index.similarity(vecs, groups=groups)
+        if return_labels:
+            labs = self.index.labels
+            return [(l, v.item()) for l, v in zip(labs, sims)]
+        else:
+            return sims
+
     def search(self, query, groups=None, top_k=10, cutoff=-torch.inf, return_simil=False):
-        qvec = self.embed.embed(query).squeeze() if type(query) is str else query
-        labs, sims = self.index.search(qvec, top_k, groups=groups)
+        qvec = self.embed_text(query)
+        labs, sims = self.index.search(qvec, top_k=top_k, groups=groups)
         match = [(l, v) for l, v in zip(labs, sims.tolist()) if v > cutoff]
         order = sorted(match, key=itemgetter(1), reverse=True)
         return order if return_simil else [l for l, v in order]
@@ -179,8 +197,9 @@ class DocumentDatabase(TextDatabase):
         return self
 
     @classmethod
-    def load(cls, path, index_device='cuda', **kwargs):
-        self = super().load(data, index_device=index_device, **kwargs)
+    def load(cls, path, embed=None, index_device='cuda', **kwargs):
+        data = torch.load(path, map_location=index_device) if type(path) is str else path
+        self = super().load(data, embed=embed, index_device=index_device, **kwargs)
         self.dindex = TorchVectorIndex.load(data['dindex'], device=index_device)
         return self
 

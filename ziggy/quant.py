@@ -188,11 +188,8 @@ class QuantizedEmbedding:
             'data': self.data,
         }
 
-    def size(self):
-        return self.data.size(0)
-
     def __len__(self):
-        return self.size()
+        return self.data.size(0)
 
     def resize(self, size):
         resize_alloc(self.data, size)

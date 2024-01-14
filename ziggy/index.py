@@ -128,6 +128,16 @@ class TorchVectorIndex:
             self.values.zero_()
             self.groups.zero_()
 
+    def all_vecs(self):
+        return self.values[:len(self)]
+
+    def all_groups(self):
+        return self.groups[:len(self)]
+
+    def all_grpids(self):
+        grpmap = {v: k for k, v in self.grpids.items()}
+        return [grpmap[i] for i in self.groups[:len(self)].tolist()]
+
     def get(self, labels):
         # convert to indices
         labels = [labels] if type(labels) is not list else labels
@@ -157,26 +167,35 @@ class TorchVectorIndex:
         return self.values[indices]
 
     def group_mask(self, groups=None):
-        size = len(self)
         if groups is None:
-            return size
+            return len(self)
         else:
+            # check that groups are valid
+            if type(groups) is not list:
+                groups = [groups]
+            if not all(g in self.grpids for g in groups):
+                raise Exception(f'Some groups are invalid: {groups}')
+
+            # get group member indices
             ids = torch.tensor(self.grpids.idx(groups), device=self.device, dtype=torch.int32)
-            sel = torch.isin(self.groups[:size], ids)
+            sel = torch.isin(self.groups[:len(self)], ids)
             return torch.nonzero(sel).squeeze()
 
-    def search(self, vecs, top_k=10, groups=None, return_simil=True):
-        # allow for single vec
-        squeeze = vecs.ndim == 1
-        if squeeze:
-            vecs = vecs.unsqueeze(0)
-
-        # get compare values
+    def similarity(self, vecs, groups=None, return_labels=False, squeeze=True):
+        vecs = torch.atleast_2d(vecs)
         mask = self.group_mask(groups)
-        labs = [self.labels[i] for i in mask] if groups is not None else self.labels
-
-        # compute similarity matrix
         sims = self.values.similarity(vecs, mask=mask)
+        if squeeze:
+            sims = sims.squeeze()
+        if return_labels:
+            labs = [self.labels[i] for i in mask] if groups is not None else self.labels
+            return labs, sims
+        else:
+            return sims
+
+    def search(self, vecs, top_k=10, groups=None, return_simil=True):
+        # compute similarity matrix
+        labs, sims = self.similarity(vecs, groups=groups, return_labels=True, squeeze=False)
 
         # get top results
         top_k1 = min(top_k, len(self))
@@ -185,17 +204,11 @@ class TorchVectorIndex:
         kval = tops.values
 
         # return single vec if needed
-        if squeeze:
+        if vecs.ndim == 1:
             klab, kval = klab[0], kval[0]
 
         # return labels/simils
         return (klab, kval) if return_simil else klab
-
-    def similarity(self, vecs, groups=None):
-        vecs = torch.atleast_2d(vecs)
-        mask = self.group_mask(groups)
-        sims = self.values.similarity(vecs, mask=mask)
-        return sims.squeeze(0)
 
 ##
 ## FAISS

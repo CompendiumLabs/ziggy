@@ -102,7 +102,7 @@ class TextDatabase:
         return len(self.text)
 
     def embed_text(self, text, threaded=True):
-        return self.embed.embed(text, threaded=threaded, batch_size=self.batch_size)
+        return self.embed.embed(text, threaded=threaded).squeeze()
 
     def index_text(self, labels, text):
         self.text.update(zip(labels, text))
@@ -139,17 +139,9 @@ class TextDatabase:
     def get_vecs(self, labels):
         return self.index.get(labels)
 
-    def embed_text(self, text):
-        return self.embed.embed(text).squeeze() if type(text) is str else text
-
     def similarity(self, text, groups=None, return_labels=False):
         vecs = self.embed_text(text)
-        sims = self.index.similarity(vecs, groups=groups)
-        if return_labels:
-            labs = self.index.labels
-            return [(l, v.item()) for l, v in zip(labs, sims)]
-        else:
-            return sims
+        return self.index.similarity(vecs, groups=groups, return_labels=return_labels)
 
     def search(self, query, groups=None, top_k=10, cutoff=-torch.inf, return_simil=False):
         qvec = self.embed_text(query)
@@ -157,6 +149,13 @@ class TextDatabase:
         match = [(l, v) for l, v in zip(labs, sims.tolist()) if v > cutoff]
         order = sorted(match, key=itemgetter(1), reverse=True)
         return order if return_simil else [l for l, v in order]
+
+    def context(self, query, **kwargs):
+        match = self.search(query, **kwargs)
+        texts = self.get_text(sorted(match))
+        return '\n\n'.join([
+            f'{lab}: {txt}' for lab, txt in zip(match, texts)
+        ])
 
 ##
 ## document oriented database

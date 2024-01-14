@@ -209,8 +209,8 @@ class QuantizedEmbedding:
     def zero_(self):
         self.data.zero_()
 
-    # here `a` is considered big and immovable
-    # transpose pattern is to keep `a` contiguous
+    # here `data` is considered big and immovable
+    # transpose pattern is to keep `data` contiguous
     def similarity(self, vecs, mask=None):
         # move `b` to same device as `a`
         vecs = vecs.to(device=self.device)

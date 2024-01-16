@@ -66,11 +66,11 @@ def stream_jsonl(path, maxrows=None):
 class TextDatabase:
     def __init__(
             self, embed=DEFAULT_EMBED, embed_device='cuda', index_device='cuda',
-            batch_size=128, allocate=True, dims=None, qspec=Float, **kwargs
+            onnx=True, batch_size=128, allocate=True, dims=None, qspec=Float, **kwargs
         ):
         # instantiate embedding model
         if type(embed) is str:
-            self.embed = HuggingfaceEmbedding(embed, device=embed_device, batch_size=batch_size)
+            self.embed = HuggingfaceEmbedding(embed, device=embed_device, onnx=True, batch_size=batch_size)
         else:
             self.embed = embed
 

@@ -15,7 +15,7 @@ from .utils import (
 ## Constants
 ##
 
-DEFAULT_EMBED = 'TaylorAI/bge-micro-v2'
+DEFAULT_EMBED = 'BAAI/bge-large-en-v1.5'
 
 ##
 ## Embeddings

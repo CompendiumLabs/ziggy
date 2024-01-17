@@ -17,10 +17,10 @@ def next_power_of_2(x):
 
 # allow list or single item
 def allow_list(func):
-    def wrapper(self, keys):
+    def wrapper(self, keys, **kwargs):
         many = type(keys) is list
         keys = keys if many else [keys]
-        rets = func(self, keys)
+        rets = func(self, keys, **kwargs)
         if rets is not None:
             return rets if many else rets[0]
     return wrapper

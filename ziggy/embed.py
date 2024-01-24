@@ -24,7 +24,7 @@ DEFAULT_EMBED = 'BAAI/bge-large-en-v1.5'
 class HuggingfaceEmbedding:
     def __init__(
         self, model_id=DEFAULT_EMBED, max_len=None, batch_size=128, queue_size=256,
-        device='cuda', dtype=torch.float16, onnx=False, save_dir=None, compile=False
+        device='cuda', dtype=None, onnx=False, save_dir=None, compile=False
     ):
         from onnxruntime import SessionOptions
         from optimum.onnxruntime import ORTModelForFeatureExtraction, ORTOptimizer
@@ -65,8 +65,10 @@ class HuggingfaceEmbedding:
                 model_path, provider=provider, provider_options=provider_options
             )
         else:
-            device_map = {'': 0} if device == 'cuda' else device_map
-            self.model = AutoModel.from_pretrained(model_id, device_map=device_map)
+            device_map = {'': 0} if device == 'cuda' else device
+            if dtype is None:
+                dtype = torch.float16 if device == 'cuda' else torch.float32
+            self.model = AutoModel.from_pretrained(model_id, device_map=device_map, torch_dtype=dtype)
 
         # get model info
         self.name = model_id

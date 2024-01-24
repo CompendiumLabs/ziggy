@@ -65,8 +65,8 @@ def stream_jsonl(path, maxrows=None):
 # index — TorchVectorIndex {label: vec}
 class TextDatabase:
     def __init__(
-            self, embed=DEFAULT_EMBED, embed_device='cuda', index_device='cuda',
-            onnx=True, batch_size=128, allocate=True, dims=None, qspec=Float, **kwargs
+            self, embed=None, embed_device='cuda', index_device='cuda', onnx=True,
+            batch_size=128, allocate=True, dims=None, qspec=Float, **kwargs
         ):
         # instantiate embedding model
         if type(embed) is str:
@@ -74,22 +74,36 @@ class TextDatabase:
         else:
             self.embed = embed
 
+        # get embedding dimension
+        self.dims = self.embed.dims if dims is None else dims
+
         # initalize index
         if allocate:
-            self.dims = self.embed.dims if dims is None else dims
             self.text = {}
             self.index = TorchVectorIndex(self.dims, device=index_device, qspec=qspec, **kwargs)
 
     @classmethod
-    def load(cls, path, device='cuda', **kwargs):
+    def load(cls, path, embed=None, device='cuda', **kwargs):
         data = torch.load(path, map_location=device) if type(path) is str else path
-        self = cls(allocate=False, **kwargs)
+
+        # check embedding compatibility
+        embed_orig = data['embed']
+        if embed is not None:
+            embed_name = embed if type(embed) is str else embed.name
+            if embed_orig != embed_name:
+                raise ValueError(f'Embedding mismatch: {embed_orig} != {embed_name}')
+        else:
+            embed = embed_orig
+
+        # construct object
+        self = cls(embed=embed, allocate=False, **kwargs)
         self.text = data['text']
         self.index = TorchVectorIndex.load(data['index'], device=device)
         return self
 
     def save(self, path=None):
         data = {
+            'embed': self.embed.name,
             'text': self.text,
             'index': self.index.save(),
         }

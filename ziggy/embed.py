@@ -72,6 +72,7 @@ class HuggingfaceEmbedding:
 
         # get model info
         self.name = model_id
+        self.onnx = onnx
         self.batch_size = batch_size
         self.max_len = self.model.config.max_position_embeddings if max_len is None else max_len
         self.dims = self.model.config.hidden_size
@@ -90,12 +91,10 @@ class HuggingfaceEmbedding:
         token_type_ids = torch.zeros(input_ids.shape, dtype=torch.int64, device=self.device)
 
         # get model output
-        output = self.model(
-            input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids
-        )
+        output = self.model(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)
+        state = output[0]
 
         # get masked embedding
-        state = output[0]
         mask = attention_mask.float().unsqueeze(-1)
         embed = (state*mask).sum(1)/mask.sum(1)
 
@@ -156,7 +155,7 @@ class HuggingfaceEmbedding:
         return means
 
 ##
-## openai models
+## OpenAI
 ##
 
 DEFAULT_OPENAI_EMBED = 'text-embedding-ada-002'

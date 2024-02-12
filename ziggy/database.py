@@ -49,10 +49,10 @@ def read_pdf(path):
     ])
 
 # generate loader for jsonl file
-def stream_jsonl(path, maxrows=None):
+def stream_jsonl(path, max_rows=None):
     with open(path) as fid:
         for i, line in enumerate(fid):
-            if maxrows is not None and i >= maxrows:
+            if max_rows is not None and i >= max_rows:
                 break
             yield json.loads(line)
 
@@ -196,11 +196,11 @@ class DocumentDatabase(TextDatabase):
 
     @classmethod
     def from_jsonl(
-        cls, path, name_col='title', text_col='text', doc_batch=1024, maxrows=None,
+        cls, path, name_col='title', text_col='text', doc_batch=1024, max_rows=None,
         progress=True, threaded=True, **kwargs
     ):
         self = cls(**kwargs)
-        lines = stream_jsonl(path, maxrows=maxrows)
+        lines = stream_jsonl(path, max_rows=max_rows)
         for i, batch in enumerate(batch_generator(lines, doc_batch)):
             self.add_docs([
                 (row[name_col], row[text_col]) for row in batch

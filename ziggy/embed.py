@@ -158,15 +158,27 @@ class HuggingfaceEmbedding:
 ## OpenAI
 ##
 
-DEFAULT_OPENAI_EMBED = 'text-embedding-ada-002'
+DEFAULT_OPENAI_EMBED = 'text-embedding-3-large'
 
 openai_config = {
     'text-embedding-ada-002': {
         'dims': 1536,
         'max_len': 8191,
-        'req_limit': 3_000,
-        'tok_limit': 1_000_000,
+        'req_limit': 10_000,
+        'tok_limit': 5_000_000,
     },
+    'text-embedding-3-small': {
+        'dims': 1536,
+        'max_len': 8192,
+        'req_limit': 10_000,
+        'tok_limit': 5_000_000,
+    },
+    'text-embedding-3-large': {
+        'dims': 3072,
+        'max_len': 8192,
+        'req_limit': 10_000,
+        'tok_limit': 5_000_000,
+    }
 }
 
 class OpenAIEmbedding:
@@ -175,7 +187,7 @@ class OpenAIEmbedding:
         dtype=torch.half, device='cuda', tok_limit=None, req_limit=None, timepad=10, **kwargs
     ):
         import tiktoken
-        import openai as ai
+        from openai import OpenAI
 
         # runtime options
         self.dtype = dtype
@@ -194,7 +206,8 @@ class OpenAIEmbedding:
 
         # get tokenizer
         self.tokenizer = tiktoken.encoding_for_model(model_id)
-        self.model = lambda t: ai.Embedding.create(input=t, model=model_id)
+        self.client = OpenAI()
+        self.model = lambda t: self.client.embeddings.create(input=t, model=model_id)
 
         # usage tracking
         req_limit = config['req_limit'] if req_limit is None else req_limit
@@ -218,13 +231,15 @@ class OpenAIEmbedding:
         # fetch embeddings and turn into tensor
         rets = self.model(text1)
         embeds = torch.tensor(
-            [d['embedding'] for d in rets['data']], dtype=self.dtype, device=self.device
+            [d.embedding for d in rets.data], dtype=self.dtype, device=self.device
         )
 
         # return on device tensor
         return embeds
 
     def embed(self, text, threaded=False):
+        if type(text) is str:
+            text = [text]
         return torch.cat([
             self.embed_batch(chunk) for chunk in batch_generator(iter(text), self.batch_size)
         ], dim=0)

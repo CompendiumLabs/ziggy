@@ -77,12 +77,17 @@ class HuggingfaceEmbedding:
         self.max_len = self.model.config.max_position_embeddings if max_len is None else max_len
         self.dims = self.model.config.hidden_size
 
-    def tokenize_batch(self, text):
+    def tokenize_batch(self, text, truncate=False):
         encode = self.tokenizer(
             text, max_length=self.max_len, padding='max_length', truncation=True,
-            return_overflowing_tokens=True, return_tensors='pt'
+            return_overflowing_tokens=not truncate, return_tensors='pt'
         )
-        return encode.overflow_to_sample_mapping, encode.input_ids, encode.attention_mask
+        if truncate:
+            n_text, _ = encode.input_ids.shape
+            overflow_to_sample_mapping = torch.arange(n_text)
+        else:
+            overflow_to_sample_mapping = encode.overflow_to_sample_mapping
+        return overflow_to_sample_mapping, encode.input_ids, encode.attention_mask
 
     def forward_batch(self, input_ids, attention_mask):
         # prepare model inputs on device
@@ -91,25 +96,38 @@ class HuggingfaceEmbedding:
         token_type_ids = torch.zeros(input_ids.shape, dtype=torch.int64, device=self.device)
 
         # get model output
-        output = self.model(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)
-        state = output[0]
+        if self.device == 'cuda':
+            state = self.model(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)
+        else:
+            # pass in correct inputs
+            input_names = [inp.name for inp in self.model.model.get_inputs()]
+            onnx_inputs = {'input_ids': input_ids.numpy(), 'attention_mask': attention_mask.numpy()}
+            if 'token_type_ids' in input_names:
+                onnx_inputs['token_type_ids'] = token_type_ids.numpy()
+            outputs = self.model.model.run(None, onnx_inputs)
 
-        # get masked embedding
+            # try to find output location
+            output_loc = self.model.output_names.get('token_embeddings', None)
+            if output_loc is None:
+                output_loc = self.model.output_names['last_hidden_state']
+            state = torch.from_numpy(outputs[output_loc])
+
+        # get sentence embeddings
         mask = attention_mask.float().unsqueeze(-1)
-        embed = (state*mask).sum(1)/mask.sum(1)
+        embed = (state[0]*mask).sum(1)/mask.sum(1)
 
         # return normalized embedding
         return normalize(embed, dim=-1)
 
-    def embed_batch(self, text):
-        doc_indices, input_ids, attention_mask = self.tokenize_batch(text)
+    def embed_batch(self, text, truncate=False):
+        doc_indices, input_ids, attention_mask = self.tokenize_batch(text, truncate=truncate)
         indices = batch_indices(input_ids.size(0), self.batch_size)
         embed = torch.cat([
             self.forward_batch(input_ids[i1:i2], attention_mask[i1:i2]) for i1, i2 in indices
         ])
         return doc_indices, embed
 
-    def embed(self, text, threaded=False):
+    def embed(self, text, threaded=False, truncate=False):
         # handle unit case
         if type(text) is str:
             text = [text]
@@ -120,7 +138,7 @@ class HuggingfaceEmbedding:
             def loader():
                 yield from batch_generator(text, self.batch_size)
             def tokenizer(texts):
-                return self.tokenize_batch(texts)
+                return self.tokenize_batch(texts, truncate=truncate)
             def forwarder(data):
                 doc_indices, input_ids, attention_mask = data
                 indices = batch_indices(input_ids.size(0), self.batch_size)
@@ -134,7 +152,7 @@ class HuggingfaceEmbedding:
         else:
             # embed chunks and average
             results = [
-                self.embed_batch(chunk) for chunk in batch_generator(text, self.batch_size)
+                self.embed_batch(chunk, truncate=truncate) for chunk in batch_generator(text, self.batch_size)
             ]
 
         # unpack offsets and embeds
@@ -153,6 +171,22 @@ class HuggingfaceEmbedding:
 
         # return normalized vectors
         return means
+
+##
+## llama.cpp
+##
+
+class LlamaCppEmbedding:
+    def __init__(self, model_path, n_gpu_layers=-1, verbose=False, n_ctx=0, **kwargs):
+        from llama_cpp import Llama
+        self.model = Llama(
+            model_path, embedding=True, n_ctx=n_ctx, n_gpu_layers=n_gpu_layers,
+            verbose=verbose, **kwargs
+        )
+
+    def embed(self, text, **kwargs):
+        emb = self.model.embed(text, **kwargs)
+        return torch.tensor(emb, dtype=torch.float32).squeeze()
 
 ##
 ## OpenAI

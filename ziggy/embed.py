@@ -1,6 +1,7 @@
 ## Embedding models
 
 import os
+import numpy as np
 from pathlib import Path
 
 import torch
@@ -24,7 +25,7 @@ DEFAULT_EMBED = 'BAAI/bge-large-en-v1.5'
 class HuggingfaceEmbedding:
     def __init__(
         self, model_id=DEFAULT_EMBED, max_len=None, batch_size=128, queue_size=256,
-        device='cuda', dtype=None, onnx=False, save_dir=None, compile=False
+        device='cuda', dtype=None, onnx=False, save_dir=None, compile=False, trust=False
     ):
         from onnxruntime import SessionOptions
         from optimum.onnxruntime import ORTModelForFeatureExtraction, ORTOptimizer
@@ -49,7 +50,7 @@ class HuggingfaceEmbedding:
             if compile or not os.path.isdir(model_path):
                 optim_args = dict(optimize_for_gpu=True, fp16=True) if device == 'cuda' else {}
                 model = ORTModelForFeatureExtraction.from_pretrained(
-                    model_id, export=True
+                    model_id, export=True, trust_remote_code=trust
                 )
                 optimization_config = OptimizationConfig(
                     optimization_level=99, **optim_args
@@ -96,7 +97,7 @@ class HuggingfaceEmbedding:
         token_type_ids = torch.zeros(input_ids.shape, dtype=torch.int64, device=self.device)
 
         # get model output
-        if self.device == 'cuda':
+        if not self.onnx or self.device == 'cuda':
             state = self.model(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)
         else:
             # pass in correct inputs
@@ -183,10 +184,14 @@ class LlamaCppEmbedding:
             model_path, embedding=True, n_ctx=n_ctx, n_gpu_layers=n_gpu_layers,
             verbose=verbose, **kwargs
         )
+        self.dims = self.model.n_embd()
 
-    def embed(self, text, **kwargs):
+    def embed(self, text, threaded=None, return_tensors=True, **kwargs):
         emb = self.model.embed(text, **kwargs)
-        return torch.tensor(emb, dtype=torch.float32).squeeze()
+        if return_tensors:
+            return torch.tensor(emb, dtype=torch.float32).squeeze()
+        else:
+            return np.array(emb).squeeze()
 
 ##
 ## OpenAI

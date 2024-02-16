@@ -8,11 +8,10 @@ from subprocess import run
 from glob import glob
 
 import torch
-from mteb import MTEB
 
-from embed import HuggingfaceEmbedding
-from database import stream_jsonl, text_splitter, DocumentDatabase
-from quant import Half, Float, QuantType
+from .embed import HuggingfaceEmbedding, LlamaCppEmbedding
+from .database import stream_jsonl, text_splitter
+from .quant import Half, Float, QuantType
 
 TASKS_CQAD = [
     'CQADupstackAndroidRetrieval', 'CQADupstackEnglishRetrieval', 'CQADupstackGamingRetrieval', 'CQADupstackGisRetrieval',
@@ -28,26 +27,41 @@ TASKS_RETRIEVAL = [
 def task_split(task):
     return 'dev' if task == 'MSMARCO' else 'test'
 
-# load jsonl chunks directly
-def load_data(path, delim='\n', minlen=100, nrows=None):
-    docs = [line['text'] for line in stream_jsonl(path, maxrows=nrows)]
-    chunks = list(chain(*[text_splitter(doc, delim, min_len=min_len) for doc in docs]))
-    return chunks
-
-def profile_embed(model, path, maxlen=256, delim='\n', minlen=100, maxrows=None, onnx=True, compile=False):
+def profile_embed(model, path, cpu=False, max_len=512, delim='\n', min_len=100, max_rows=None, onnx=True, threaded=True):
     if type(model) is str:
-        emb = HuggingfaceEmbedding(model_id=model, maxlen=maxlen, onnx=onnx, compile=compile)
+        if model.endswith('.gguf'):
+            ngl = 0 if cpu else 99
+            emb = LlamaCppEmbedding(model, n_ctx=max_len, n_gpu_layers=ngl)
+        else:
+            device = 'cpu' if cpu else 'cuda'
+            emb = HuggingfaceEmbedding(model_id=model, max_len=max_len, device=device, onnx=onnx)
     else:
         emb = model
 
-    # index data
+
+    # split data into chunks
+    if type(path) is str:
+        _, ext = os.path.splitext(path)
+        if ext == '.jsonl':
+            data = (line['text'] for line in stream_jsonl(path, max_rows=max_rows))
+        else:
+            data = (line[:-1] for line in open(path))
+    else:
+        data = path
+
+    splitter = lambda text: text_splitter(text, delim, min_len=min_len, max_len=max_len)
+    chunks = sum((splitter(t) for t in data), [])
+
+    # do the embedding
     start = time.time()
-    db = DocumentDatabase.from_jsonl(path, embed=emb, delim=delim, minlen=minlen, maxrows=maxrows)
+    vecs = emb.embed(chunks, truncate=True, threaded=threaded)
     delta = time.time() - start
 
     # get document stats
-    ndocs = len(db.dindex)
-    nchunks = len(db.cindex)
+    nchunks = len(chunks)
+    length = torch.tensor([len(d) for d in chunks]).float()
+    size_avg = length.mean()
+    size_std = length.std()
     speed = nchunks/delta
 
     # get memory stats
@@ -60,11 +74,33 @@ def profile_embed(model, path, maxlen=256, delim='\n', minlen=100, maxrows=None,
 
     # print our results
     print()
-    print(f'Documents: {ndocs}')
     print(f'Chunks: {nchunks}')
+    print(f'Size: {size_avg:.2f} ± {size_std:.2f}')
     print(f'Time: {delta:.2f} seconds')
     print(f'Speed: {speed:.2f} chunks/second')
     print(f'Memory: {mem}')
+
+def check_embed(gguf, repo_id, path, normalize=True, n_ctx=512, max_rows=None, trust_remote_code=False):
+    from .embed import LlamaCppEmbedding
+    from sentence_transformers import SentenceTransformer
+
+    # load models
+    mod_ll = LlamaCppEmbedding(gguf, n_ctx=n_ctx, n_gpu_layers=0)
+    mod_st = SentenceTransformer(repo_id, trust_remote_code=trust_remote_code)
+
+    # load data
+    data = open(path).read().splitlines()
+    if max_rows is not None:
+        data = data[:max_rows]
+
+    # compute embeddings
+    emb_ll = mod_ll.embed(data, normalize=normalize, return_tensors=False)
+    emb_st = mod_st.encode(data, normalize_embeddings=normalize)
+
+    # compare embeddings
+    sim = (emb_ll * emb_st).sum(axis=1)
+
+    return sim
 
 # wrapper for quantization tests
 class MtebWrapper:
@@ -83,6 +119,8 @@ class MtebWrapper:
         return vec1.cpu().numpy()
 
 def profile_mteb(model, maxlen=256, qspec=Half, savedir='benchmarks', onnx=True, compile=False):
+    from mteb import MTEB
+
     if type(model) is str:
         emb = HuggingfaceEmbedding(model_id=model, maxlen=maxlen, onnx=onnx, compile=compile)
     else:

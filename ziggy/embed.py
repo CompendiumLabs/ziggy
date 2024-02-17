@@ -68,14 +68,14 @@ def compile_onnx(model, save_dir, device, trust_remote_code=False):
 
     optim_args = dict(optimize_for_gpu=True, fp16=True) if device == 'cuda' else {}
     model = ORTModelForFeatureExtraction.from_pretrained(
-        model_id, export=True, trust_remote_code=trust_remote_code
+        model, export=True, trust_remote_code=trust_remote_code
     )
     optimization_config = OptimizationConfig(
         optimization_level=99, **optim_args
     )
     optimizer = ORTOptimizer.from_pretrained(model)
     optimizer.optimize(
-        save_dir=model_path, optimization_config=optimization_config
+        save_dir=save_dir, optimization_config=optimization_config
     )
 
 ##

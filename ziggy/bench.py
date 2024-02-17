@@ -38,7 +38,6 @@ def profile_embed(model, path, cpu=False, max_len=512, delim='\n', min_len=100, 
     else:
         emb = model
 
-
     # split data into chunks
     if type(path) is str:
         _, ext = os.path.splitext(path)

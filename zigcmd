@@ -21,7 +21,7 @@ def rag(
 ):
     # load generation model
     loader = get_model_loader(loader_type)
-    mod = llm.LlamaCppModel(model, prompt_type=prompt_type, context=context)
+    mod = loader(model, prompt_type=prompt_type, context=context)
 
     # load embedding model
     emb = llm.HuggingfaceEmbedding(embed, onnx=onnx)

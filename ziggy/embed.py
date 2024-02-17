@@ -19,18 +19,75 @@ from .utils import (
 DEFAULT_EMBED = 'BAAI/bge-large-en-v1.5'
 
 ##
+## ONNX Wrapper
+##
+
+class ONNXEmbedding:
+    def __init__(self, model_dir, device):
+        from optimum.onnxruntime import ORTModelForFeatureExtraction
+
+        # device settings
+        provider = 'CUDAExecutionProvider' if device == 'cuda' else 'CPUExecutionProvider'
+        provider_options = {'arena_extend_strategy': 'kSameAsRequested'}
+
+        # create model
+        self.model = ORTModelForFeatureExtraction.from_pretrained(
+            model_dir, provider=provider, provider_options=provider_options
+        )
+
+        # store config
+        self.session = self.model.model
+        self.config = self.model.config
+        self.device = device
+
+    def __call__(self, input_ids, attention_mask, token_type_ids=None):
+        output_names = [out.name for out in self.session.get_outputs()]
+
+        if self.device == 'cuda':
+            output = self.model(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)
+        elif self.device == 'cpu':
+            # pass in correct inputs
+            input_names = [inp.name for inp in self.session.get_inputs()]
+            onnx_inputs = {'input_ids': input_ids.numpy(), 'attention_mask': attention_mask.numpy()}
+            if 'token_type_ids' in input_names:
+                onnx_inputs['token_type_ids'] = token_type_ids.numpy()
+            outputs = self.session.run(None, onnx_inputs)
+
+            # try to find output location
+            output_names = [out.name for out in self.session.get_outputs()]
+            if 'token_embeddings' in output_names:
+                output_loc = output_names.index('token_embeddings')
+            elif 'last_hidden_state' in output_names:
+                output_loc = output_names.index('last_hidden_state')
+            output = [torch.from_numpy(outputs[output_loc])]
+        return output
+
+def compile_onnx(model, save_dir, device, trust_remote_code=False):
+    from optimum.onnxruntime import ORTModelForFeatureExtraction, ORTOptimizer
+    from optimum.onnxruntime.configuration import OptimizationConfig
+
+    optim_args = dict(optimize_for_gpu=True, fp16=True) if device == 'cuda' else {}
+    model = ORTModelForFeatureExtraction.from_pretrained(
+        model_id, export=True, trust_remote_code=trust_remote_code
+    )
+    optimization_config = OptimizationConfig(
+        optimization_level=99, **optim_args
+    )
+    optimizer = ORTOptimizer.from_pretrained(model)
+    optimizer.optimize(
+        save_dir=model_path, optimization_config=optimization_config
+    )
+
+##
 ## Embeddings
 ##
 
 class HuggingfaceEmbedding:
     def __init__(
-        self, model_id=DEFAULT_EMBED, max_len=None, batch_size=128, queue_size=256,
-        device='cuda', dtype=None, onnx=False, save_dir=None, compile=False, trust=False
+        self, model_id=DEFAULT_EMBED, tokenize_id=None, max_len=None, batch_size=128,
+        queue_size=256, device='cuda', dtype=None, onnx=None, save_dir=None, compile=False,
+        pooling_type='cls', trust_remote_code=False
     ):
-        from onnxruntime import SessionOptions
-        from optimum.onnxruntime import ORTModelForFeatureExtraction, ORTOptimizer
-        from optimum.onnxruntime.configuration import OptimizationConfig
-
         # get env config
         ONNX_DIR = os.environ.get('ZIGGY_ONNX_DIR', 'onnx')
         save_dir = save_dir if save_dir is not None else ONNX_DIR
@@ -39,44 +96,37 @@ class HuggingfaceEmbedding:
         self.device = device
         self.queue_size = queue_size
 
-        # load tokenizer
-        self.tokenizer = AutoTokenizer.from_pretrained(model_id)
+        # detect onnx
+        if onnx is None:
+            optim_path = f'{model_id}/model_optimized.onnx'
+            onnx = os.path.isdir(model_id) and os.path.exists(optim_path)
 
-        # load model
+        # load model onnx or not
         if onnx:
-            model_path = os.path.join(save_dir, f'{model_id}-{device}')
-
-            # compile if needed
-            if compile or not os.path.isdir(model_path):
-                optim_args = dict(optimize_for_gpu=True, fp16=True) if device == 'cuda' else {}
-                model = ORTModelForFeatureExtraction.from_pretrained(
-                    model_id, export=True, trust_remote_code=trust
-                )
-                optimization_config = OptimizationConfig(
-                    optimization_level=99, **optim_args
-                )
-                optimizer = ORTOptimizer.from_pretrained(model)
-                optimizer.optimize(
-                    save_dir=model_path, optimization_config=optimization_config
-                )
-
-            provider = 'CUDAExecutionProvider' if device == 'cuda' else 'CPUExecutionProvider'
-            provider_options = {'arena_extend_strategy': 'kSameAsRequested'}
-            self.model = ORTModelForFeatureExtraction.from_pretrained(
-                model_path, provider=provider, provider_options=provider_options
-            )
+            if os.path.isdir(model_id):
+                model_path = model_id
+                model_id = os.path.basename(model_path)
+            else:
+                model_path = os.path.join(save_dir, f'{model_id}-{device}')
+                if compile or not os.path.isdir(model_path):
+                    compile_onnx(
+                        model_id, model_path, device, trust_remote_code=trust_remote_code
+                    )
+            self.tokenizer = AutoTokenizer.from_pretrained(model_path)
+            self.model = ONNXEmbedding(model_path, device)
         else:
             device_map = {'': 0} if device == 'cuda' else device
             if dtype is None:
                 dtype = torch.float16 if device == 'cuda' else torch.float32
+            self.tokenizer = AutoTokenizer.from_pretrained(model_id)
             self.model = AutoModel.from_pretrained(model_id, device_map=device_map, torch_dtype=dtype)
 
         # get model info
         self.name = model_id
-        self.onnx = onnx
         self.batch_size = batch_size
         self.max_len = self.model.config.max_position_embeddings if max_len is None else max_len
         self.dims = self.model.config.hidden_size
+        self.pooling_type = pooling_type
 
     def tokenize_batch(self, text, truncate=False):
         encode = self.tokenizer(
@@ -97,25 +147,15 @@ class HuggingfaceEmbedding:
         token_type_ids = torch.zeros(input_ids.shape, dtype=torch.int64, device=self.device)
 
         # get model output
-        if not self.onnx or self.device == 'cuda':
-            state = self.model(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)
-        else:
-            # pass in correct inputs
-            input_names = [inp.name for inp in self.model.model.get_inputs()]
-            onnx_inputs = {'input_ids': input_ids.numpy(), 'attention_mask': attention_mask.numpy()}
-            if 'token_type_ids' in input_names:
-                onnx_inputs['token_type_ids'] = token_type_ids.numpy()
-            outputs = self.model.model.run(None, onnx_inputs)
-
-            # try to find output location
-            output_loc = self.model.output_names.get('token_embeddings', None)
-            if output_loc is None:
-                output_loc = self.model.output_names['last_hidden_state']
-            state = torch.from_numpy(outputs[output_loc])
+        output = self.model(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)
+        state = output[0]
 
         # get sentence embeddings
-        mask = attention_mask.float().unsqueeze(-1)
-        embed = (state[0]*mask).sum(1)/mask.sum(1)
+        if self.pooling_type == 'mean':
+            mask = attention_mask.float().unsqueeze(-1)
+            embed = (state*mask).sum(1)/mask.sum(1)
+        elif self.pooling_type == 'cls':
+            embed = state[:,0,:]
 
         # return normalized embedding
         return normalize(embed, dim=-1)

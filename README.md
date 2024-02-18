@@ -4,7 +4,7 @@ The documentation is pretty sparse right now, but most of the action is in `llm.
 
 ##  Install
 
-For simple usage, you no additional steps are needed beyond cloning the repository. If you want quantization support (optional), you need to build the custom `torch` extensions, in the `extension` directory:
+For simple usage, no additional steps are needed beyond cloning the repository. If you want quantization support (optional), you need to build the custom `torch` extensions, in the `extension` directory:
 ```bash
 cd extension
 python setup.py install --user

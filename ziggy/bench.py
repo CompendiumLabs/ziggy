@@ -27,11 +27,14 @@ TASKS_RETRIEVAL = [
 def task_split(task):
     return 'dev' if task == 'MSMARCO' else 'test'
 
-def profile_embed(model, path, cpu=False, max_len=512, delim='\n', min_len=100, max_rows=None, onnx=True, threaded=True):
+def profile_embed(
+        model, path, cpu=False, max_len=512, delim='\n', min_len=100, max_rows=None,
+        onnx=True, threaded=True, n_threads=1
+    ):
     if type(model) is str:
         if model.endswith('.gguf'):
             ngl = 0 if cpu else 99
-            emb = LlamaCppEmbedding(model, n_ctx=max_len, n_gpu_layers=ngl)
+            emb = LlamaCppEmbedding(model, n_ctx=max_len, n_gpu_layers=ngl, n_threads=n_threads)
         else:
             device = 'cpu' if cpu else 'cuda'
             emb = HuggingfaceEmbedding(model_id=model, max_len=max_len, device=device, onnx=onnx)

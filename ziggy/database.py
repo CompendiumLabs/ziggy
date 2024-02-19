@@ -200,13 +200,15 @@ class DocumentDatabase(TextDatabase):
         progress=True, threaded=True, **kwargs
     ):
         self = cls(**kwargs)
+        n_total = 0
         lines = stream_jsonl(path, max_rows=max_rows)
         for i, batch in enumerate(batch_generator(lines, doc_batch)):
             self.add_docs([
                 (row[name_col], row[text_col]) for row in batch
             ], threaded=threaded)
+            n_total += len(batch)
             if progress:
-                print('█', end='', flush=True)
+                print(f'{i:5d}: {n_total} documents')
         return self
 
     @classmethod

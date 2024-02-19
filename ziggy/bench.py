@@ -34,7 +34,7 @@ def profile_embed(
     if type(model) is str:
         if model.endswith('.gguf'):
             ngl = 0 if cpu else 99
-            emb = LlamaCppEmbedding(model, n_ctx=max_len, n_gpu_layers=ngl, n_threads=n_threads)
+            emb = LlamaCppEmbedding(model, max_len=max_len, n_gpu_layers=ngl, n_threads=n_threads)
         else:
             device = 'cpu' if cpu else 'cuda'
             emb = HuggingfaceEmbedding(model_id=model, max_len=max_len, device=device, onnx=onnx)
@@ -82,12 +82,15 @@ def profile_embed(
     print(f'Speed: {speed:.2f} chunks/second')
     print(f'Memory: {mem}')
 
-def check_embed(gguf, repo_id, path, normalize=True, n_ctx=512, max_rows=None, trust_remote_code=False):
+def check_embed(gguf, repo_id, path, normalize=True, cpu=False, max_len=512, max_rows=None, trust_remote_code=False):
     from .embed import LlamaCppEmbedding
     from sentence_transformers import SentenceTransformer
 
+    # set up device
+    ngl = 0 if cpu else 99
+
     # load models
-    mod_ll = LlamaCppEmbedding(gguf, n_ctx=n_ctx, n_gpu_layers=0)
+    mod_ll = LlamaCppEmbedding(gguf, max_len=max_len, n_gpu_layers=ngl)
     mod_st = SentenceTransformer(repo_id, trust_remote_code=trust_remote_code)
 
     # load data
@@ -96,7 +99,7 @@ def check_embed(gguf, repo_id, path, normalize=True, n_ctx=512, max_rows=None, t
         data = data[:max_rows]
 
     # compute embeddings
-    emb_ll = mod_ll.embed(data, normalize=normalize, return_tensors=False)
+    emb_ll = mod_ll.embed(data, normalize=normalize, truncate=True).cpu().numpy()
     emb_st = mod_st.encode(data, normalize_embeddings=normalize)
 
     # compare embeddings

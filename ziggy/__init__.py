@@ -4,8 +4,10 @@ from . import index
 from . import embed
 from . import database
 from . import bench
+from . import guffy
 
 from .quant import QuantType, QuantSpec
 from .index import TorchVectorIndex
 from .embed import HuggingfaceEmbedding, LlamaCppEmbedding
 from .database import TextDatabase, DocumentDatabase, FilesystemDatabase
+from .guffy import Guffy

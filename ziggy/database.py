@@ -13,7 +13,7 @@ from pathlib import Path
 from glob import glob
 from torch.nn.functional import normalize
 
-from .embed import HuggingfaceEmbedding, DEFAULT_EMBED
+from .embed import HuggingfaceEmbedding
 from .index import TorchVectorIndex
 from .quant import Float
 from .utils import batch_generator, cumul_indices, list_splitter

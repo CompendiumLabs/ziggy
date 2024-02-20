@@ -29,12 +29,12 @@ def task_split(task):
 
 def profile_embed(
         model, path, cpu=False, max_len=512, delim='\n', min_len=100, max_rows=None,
-        onnx=True, threaded=True, n_threads=1
+        onnx=True, truncate=False, threaded=True, n_threads=None, verbose=False
     ):
     if type(model) is str:
         if model.endswith('.gguf'):
-            ngl = 0 if cpu else 99
-            emb = LlamaCppEmbedding(model, max_len=max_len, n_gpu_layers=ngl, n_threads=n_threads)
+            device = 'cpu' if cpu else 'cuda'
+            emb = LlamaCppEmbedding(model, max_len=max_len, device=device, n_threads=n_threads, verbose=verbose)
         else:
             device = 'cpu' if cpu else 'cuda'
             emb = HuggingfaceEmbedding(model_id=model, max_len=max_len, device=device, onnx=onnx)
@@ -56,7 +56,7 @@ def profile_embed(
 
     # do the embedding
     start = time.time()
-    vecs = emb.embed(chunks, truncate=True, threaded=threaded)
+    vecs = emb.embed(chunks, truncate=truncate, threaded=threaded)
     delta = time.time() - start
 
     # get document stats

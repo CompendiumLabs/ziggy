@@ -4,6 +4,7 @@ import os
 import numpy as np
 from math import ceil
 from itertools import chain
+from collections import defaultdict
 from pathlib import Path
 
 import torch
@@ -13,12 +14,6 @@ from transformers import AutoTokenizer, AutoModel
 from .utils import (
     pipeline_threads, batch_generator, batch_indices, list_splitter, cumsum, cumul_bounds, RequestTracker
 )
-
-##
-## Constants
-##
-
-DEFAULT_EMBED = 'BAAI/bge-large-en-v1.5'
 
 ##
 ## ONNX Wrapper
@@ -86,7 +81,7 @@ def compile_onnx(model, save_dir, device, trust_remote_code=False):
 
 class HuggingfaceEmbedding:
     def __init__(
-        self, model_id=DEFAULT_EMBED, tokenize_id=None, max_len=None, batch_size=128,
+        self, model_id, tokenize_id=None, max_len=None, batch_size=128,
         queue_size=256, device='cuda', dtype=None, onnx=None, save_dir=None, compile=False,
         pooling_type='cls', trust_remote_code=False
     ):
@@ -223,6 +218,28 @@ class HuggingfaceEmbedding:
 ## llama.cpp
 ##
 
+# = defaultdict(list)
+# + handles popping off maximal list
+# + handles deletion on empty list
+class SizeDist(dict):
+    def __init__(self, data):
+        sdist = defaultdict(list)
+        for i, size in enumerate(data):
+            sdist[size].append(i)
+        super().__init__(sdist)
+
+    def pop(self, max_size=None):
+        if max_size is None:
+            size = max(self, default=None)
+        else:
+            size = max((s for s in self if s <= max_size), default=None)
+        if size is None:
+            return
+        ret = self[size].pop(0)
+        if len(self[size]) == 0:
+            del self[size]
+        return ret
+
 class LlamaCppEmbedding:
     def __init__(self, model_path, max_len=512, device='cuda', verbose=False, **kwargs):
         from llama_cpp import Llama
@@ -270,60 +287,67 @@ class LlamaCppEmbedding:
         # return on device
         return torch.tensor(embeds, device=self.device, dtype=torch.float32)
 
-    def forward(self, tokens, size=None):
-        # set up output
-        size = len(tokens) if size is None else size
-        embeds = torch.empty(size, self.dims, device=self.device, dtype=torch.float32)
-        pos = 0
+    def forward(self, tokens):
+        # get sequence stats
+        n_seq = len(tokens)
+        sizes = [len(toks) for toks in tokens]
+        total = sum(sizes)
 
-        # int batch
-        batch = []
-        batch_seq = 0
-        batch_tok = 0
+        # get size distribution
+        sdist = SizeDist(sizes)
+        assert max(sdist) <= self.max_len
 
-        # accumulate and forward
-        for toks in tokens:
-            ntoks = len(toks)
+        # plan batch contents
+        batches = []
+        bidxs = []
+        bsize = 0
+        for _ in range(n_seq):
+            # get a maximal sample
+            idx = sdist.pop(self.max_len-bsize)
 
-            # forward if we're full
-            if batch_tok + ntoks > self.max_len:
-                embeds[pos:pos+batch_seq] = self.forward_batch(batch)
-                pos += batch_seq
+            # if none we commit batch and retry
+            if idx is None:
+                batches.append(bidxs)
+                bidxs = []
+                bsize = 0
+                idx = sdist.pop(self.max_len)
 
-                # reset batch
-                batch = []
-                batch_seq = 0
-                batch_tok = 0
+            # append to batch
+            bidxs.append(idx)
+            bsize += sizes[idx]
 
-            # append for later
-            batch.append(toks)
-            batch_seq += 1
-            batch_tok += ntoks
+        # append final batch
+        batches.append(bidxs)
 
-        # forward any remaining
-        embeds[pos:pos+batch_seq] = self.forward_batch(batch)
+        # compute embeddings
+        embeds = torch.empty(total, self.dims, device=self.device, dtype=torch.float32)
+        for idxs in batches:
+            toks = [tokens[i] for i in idxs]
+            embeds[idxs] = self.forward_batch(toks)
+
         return embeds
 
-    # this is (good) lazy — zero copy with truncate, one copy with split
     def embed(self, text, threaded=None, truncate=False, normalize=True):
         if type(text) is str:
             text = [text]
 
-        # get tokens and handle truncation
+        # get tokens and length distribution
         tokens = [self.tokenize(t) for t in text]
 
-        # forward based on case
+        # handle truncation
         if truncate:
-            embeds = self.forward((t[:self.max_len] for t in tokens), size=len(tokens))
+            chunks = [t[:self.max_len] for t in tokens]
         else:
-            # flatten into chunks and forward
             splits = [ceil(len(t) / self.max_len) for t in tokens]
-            chunks = chain.from_iterable(list_splitter(t, self.max_len) for t in tokens)
-            embeds0 = self.forward(chunks, size=sum(splits))
+            chunks = list(chain.from_iterable((list_splitter(t, self.max_len) for t in tokens)))
 
-            # aggreate to document level
+        # run forward compute
+        embeds = self.forward(chunks)
+
+        # aggreate to document level
+        if not truncate:
             embeds = torch.stack([
-                embeds0[i:j,:].mean(dim=0) if j > i + 1 else embeds0[i,:]
+                embeds[i:j,:].mean(dim=0) if j > i + 1 else embeds[i,:]
                 for i, j in cumul_bounds(splits)
             ], dim=0)
 
@@ -362,7 +386,7 @@ openai_config = {
 
 class OpenAIEmbedding:
     def __init__(
-        self, model_id=DEFAULT_OPENAI_EMBED, tokenizer_id=None, dims=None, max_len=None, batch_size=1024,
+        self, model_id, tokenizer_id=None, dims=None, max_len=None, batch_size=1024,
         dtype=torch.half, device='cuda', tok_limit=None, req_limit=None, timepad=10, **kwargs
     ):
         import tiktoken

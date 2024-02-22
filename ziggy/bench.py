@@ -82,8 +82,7 @@ def profile_embed(
     print(f'Speed: {speed:.2f} chunks/second')
     print(f'Memory: {mem}')
 
-def check_embed(gguf, repo_id, path, normalize=True, cpu=False, max_len=512, max_rows=None, trust_remote_code=False):
-    from .embed import LlamaCppEmbedding
+def check_embed(gguf, repo_id, data, normalize=True, cpu=False, max_len=512, max_rows=None, trust_remote_code=False):
     from sentence_transformers import SentenceTransformer
 
     # set up device
@@ -94,7 +93,8 @@ def check_embed(gguf, repo_id, path, normalize=True, cpu=False, max_len=512, max
     mod_st = SentenceTransformer(repo_id, trust_remote_code=trust_remote_code)
 
     # load data
-    data = open(path).read().splitlines()
+    if type(data) is str:
+        data = open(data).read().splitlines()
     if max_rows is not None:
         data = data[:max_rows]
 
@@ -106,6 +106,62 @@ def check_embed(gguf, repo_id, path, normalize=True, cpu=False, max_len=512, max
     sim = (emb_ll * emb_st).sum(axis=1)
 
     return sim
+
+# check tokenizer individually
+def check_tokenizer(gguf, repo_id, data, max_rows=None):
+    from transformers import AutoTokenizer
+    from Levenshtein import editops
+    from termcolor import cprint
+
+    # load models
+    mod_ll = LlamaCppEmbedding(gguf, n_gpu_layers=0)
+    mod_hf = AutoTokenizer.from_pretrained(repo_id)
+    idmap = lambda i: mod_hf._tokenizer.id_to_token(i)
+
+    # load data
+    if type(data) is str:
+        data = open(data).read().splitlines()
+    if max_rows is not None:
+        data = data[:max_rows]
+
+    # compute token ids
+    ids_ll = [mod_ll.tokenize(text) for text in data]
+    ids_st = [mod_hf.encode(text) for text in data]
+
+    def tokmap(i, replace=False):
+        tok = mod_hf._tokenizer.id_to_token(i)
+        if tok.startswith('##'):
+            return tok[2:]
+        else:
+            pre = '_' if replace else ' '
+            return f'{pre}{tok}'
+
+    # compare token ids
+    for i, (id_ll, id_st) in enumerate(zip(ids_ll, ids_st)):
+        if id_ll != id_st:
+            print(f'Mismatch at index {i}')
+            ops = {
+                i1: (op, i2) for op, i1, i2 in editops(id_ll, id_st)
+            }
+            for pos1, id1 in enumerate(id_ll):
+                if pos1 in ops:
+                    op, pos2 = ops[pos1]
+                    id2 = id_st[pos2]
+                    tok1 = tokmap(id1, replace=True)
+                    tok2 = tokmap(id2, replace=True)
+                    if op == 'insert':
+                        cprint(f'[+{tok1}]', color='green', attrs=['bold'], end='')
+                    elif op == 'delete':
+                        cprint(f'[-{tok1}]', color='red', attrs=['bold'], end='')
+                    else:
+                        cprint('[', end='')
+                        cprint(f'{tok1}', color='red', attrs=['bold'], end='')
+                        cprint(f'→{tok2}', color='green', attrs=['bold'], end='')
+                        cprint(']', end='')
+                else:
+                    tok1 = tokmap(id1, replace=False)
+                    print(tok1, end='')
+            print('\n')
 
 # wrapper for quantization tests
 class MtebWrapper:

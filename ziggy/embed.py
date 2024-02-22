@@ -240,6 +240,36 @@ class SizeDist(dict):
             del self[size]
         return ret
 
+def pack_batches(sizes, max_len):
+    # get size distribution
+    n_seq = len(sizes)
+    sdist = SizeDist(sizes)
+    assert max(sdist) <= max_len
+
+    # plan batch contents
+    batches = []
+    bidxs = []
+    bsize = 0
+    for _ in range(n_seq):
+        # get a maximal sample
+        idx = sdist.pop(max_len-bsize)
+
+        # if none we commit batch and retry
+        if idx is None:
+            batches.append(bidxs)
+            bidxs = []
+            bsize = 0
+            idx = sdist.pop(max_len)
+
+        # append to batch
+        bidxs.append(idx)
+        bsize += sizes[idx]
+
+    # append final batch
+    batches.append(bidxs)
+
+    return batches
+
 class LlamaCppEmbedding:
     def __init__(self, model_path, max_len=512, device='cuda', verbose=False, **kwargs):
         from llama_cpp import Llama
@@ -288,39 +318,14 @@ class LlamaCppEmbedding:
         return torch.tensor(embeds, device=self.device, dtype=torch.float32)
 
     def forward(self, tokens):
-        # get sequence stats
-        n_seq = len(tokens)
-        sizes = [len(toks) for toks in tokens]
-        total = sum(sizes)
-
-        # get size distribution
-        sdist = SizeDist(sizes)
-        assert max(sdist) <= self.max_len
-
         # plan batch contents
-        batches = []
-        bidxs = []
-        bsize = 0
-        for _ in range(n_seq):
-            # get a maximal sample
-            idx = sdist.pop(self.max_len-bsize)
+        sizes = [len(toks) for toks in tokens]
+        batches = pack_batches(sizes, self.max_len)
 
-            # if none we commit batch and retry
-            if idx is None:
-                batches.append(bidxs)
-                bidxs = []
-                bsize = 0
-                idx = sdist.pop(self.max_len)
-
-            # append to batch
-            bidxs.append(idx)
-            bsize += sizes[idx]
-
-        # append final batch
-        batches.append(bidxs)
+        # allocate output tensor
+        embeds = torch.empty(len(tokens), self.dims, device=self.device, dtype=torch.float32)
 
         # compute embeddings
-        embeds = torch.empty(total, self.dims, device=self.device, dtype=torch.float32)
         for idxs in batches:
             toks = [tokens[i] for i in idxs]
             embeds[idxs] = self.forward_batch(toks)

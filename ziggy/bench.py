@@ -108,15 +108,17 @@ def check_embed(gguf, repo_id, data, normalize=True, cpu=False, max_len=512, max
     return sim
 
 # check tokenizer individually
-def check_tokenizer(gguf, repo_id, data, max_rows=None):
+def check_tokenizer(mod_ll, mod_hf, data, max_rows=None):
+    from llama_cpp import Llama
     from transformers import AutoTokenizer
     from Levenshtein import editops
     from termcolor import cprint
 
     # load models
-    mod_ll = LlamaCppEmbedding(gguf, n_gpu_layers=0)
-    mod_hf = AutoTokenizer.from_pretrained(repo_id)
-    idmap = lambda i: mod_hf._tokenizer.id_to_token(i)
+    if type(mod_ll) is str:
+        mod_ll = Llama(mod_ll, verbose=False)
+    if type(mod_hf) is str:
+        mod_hf = AutoTokenizer.from_pretrained(mod_hf)
 
     # load data
     if type(data) is str:
@@ -125,7 +127,7 @@ def check_tokenizer(gguf, repo_id, data, max_rows=None):
         data = data[:max_rows]
 
     # compute token ids
-    ids_ll = [mod_ll.tokenize(text) for text in data]
+    ids_ll = [mod_ll.tokenize(text.encode('utf-8')) for text in data]
     ids_st = [mod_hf.encode(text) for text in data]
 
     def tokmap(i, replace=False):
@@ -153,11 +155,11 @@ def check_tokenizer(gguf, repo_id, data, max_rows=None):
                         cprint(f'[+{tok1}]', color='green', attrs=['bold'], end='')
                     elif op == 'delete':
                         cprint(f'[-{tok1}]', color='red', attrs=['bold'], end='')
-                    else:
-                        cprint('[', end='')
+                    elif op == 'replace':
+                        print('[', end='')
                         cprint(f'{tok1}', color='red', attrs=['bold'], end='')
                         cprint(f'→{tok2}', color='green', attrs=['bold'], end='')
-                        cprint(']', end='')
+                        print(']', end='')
                 else:
                     tok1 = tokmap(id1, replace=False)
                     print(tok1, end='')

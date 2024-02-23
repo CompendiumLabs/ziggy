@@ -284,6 +284,7 @@ class LlamaCppEmbedding:
         )
 
         # get metadata
+        self.name = os.path.basename(model_path)
         self.max_len = max_len
         self.dims = self.model.n_embd()
 

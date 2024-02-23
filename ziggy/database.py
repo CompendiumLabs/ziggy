@@ -83,15 +83,16 @@ class TextDatabase:
             self.index = TorchVectorIndex(self.dims, device=index_device, qspec=qspec, **kwargs)
 
     @classmethod
-    def load(cls, path, embed=None, device='cuda', **kwargs):
+    def load(cls, path, embed=None, device='cuda', check_embed=True, **kwargs):
         data = torch.load(path, map_location=device) if type(path) is str else path
 
         # check embedding compatibility
         embed_orig = data['embed']
         if embed is not None:
-            embed_name = embed if type(embed) is str else embed.name
-            if embed_orig != embed_name:
-                raise ValueError(f'Embedding mismatch: {embed_orig} != {embed_name}')
+            if check_embed:
+                embed_name = embed if type(embed) is str else embed.name
+                if embed_orig != embed_name:
+                    raise ValueError(f'Embedding mismatch: {embed_orig} != {embed_name}')
         else:
             embed = embed_orig
 
@@ -153,13 +154,15 @@ class TextDatabase:
     def get_vecs(self, labels):
         return self.index.get(labels)
 
-    def similarity(self, text, groups=None, return_labels=False):
-        vecs = self.embed_text(text)
-        return self.index.similarity(vecs, groups=groups, return_labels=return_labels)
+    def similarity(self, query, groups=None, return_labels=False):
+        if type(query) is str:
+            query = self.embed_text(query)
+        return self.index.similarity(query, groups=groups, return_labels=return_labels)
 
     def search(self, query, groups=None, top_k=10, cutoff=-torch.inf, return_simil=False):
-        qvec = self.embed_text(query)
-        labs, sims = self.index.search(qvec, top_k=top_k, groups=groups)
+        if type(query) is str:
+            query = self.embed_text(query)
+        labs, sims = self.index.search(query, top_k=top_k, groups=groups)
         match = [(l, v) for l, v in zip(labs, sims.tolist()) if v > cutoff]
         order = sorted(match, key=itemgetter(1), reverse=True)
         return order if return_simil else [l for l, v in order]
@@ -259,9 +262,10 @@ class DocumentDatabase(TextDatabase):
             self.dindex.remove(names)
 
     def search_docs(self, query, top_d=25, **kwargs):
-        qvec = self.embed.embed(query).squeeze()
-        docs = self.dindex.search(qvec, top_d, return_simil=False)
-        return self.search(qvec, groups=docs, **kwargs)
+        if type(query) is str:
+            query = self.embed.embed(query).squeeze()
+        docs = self.dindex.search(query, top_d, return_simil=False)
+        return self.search(query, groups=docs, **kwargs)
 
 ##
 ## filesystem interface

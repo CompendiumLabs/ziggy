@@ -1,6 +1,7 @@
 ## Embedding models
 
 import os
+import json
 import numpy as np
 from math import ceil
 from itertools import chain
@@ -10,6 +11,8 @@ from pathlib import Path
 import torch
 from torch.nn.functional import normalize as norm
 from transformers import AutoTokenizer, AutoModel
+import huggingface_hub as hub
+from huggingface_hub.utils import EntryNotFoundError
 
 from .utils import (
     pipeline_threads, batch_generator, batch_indices, list_splitter, cumsum, cumul_bounds, RequestTracker
@@ -79,11 +82,47 @@ def compile_onnx(model, save_dir, device, trust_remote_code=False):
 ## Embeddings
 ##
 
+def detect_pooling_type(repo_id):
+    # get modules file
+    try:
+        mod_path = hub.hf_hub_download(repo_id, filename='modules.json')
+    except EntryNotFoundError:
+        return
+    with open(mod_path) as f:
+        mod_data = json.load(f)
+
+    # pick off pooling layer
+    pool_rel = None
+    for mod in mod_data:
+        if mod['type'] == 'sentence_transformers.models.Pooling':
+            pool_rel = mod['path']
+            break
+    if pool_rel is None:
+        return
+
+    # get pooling layer conf
+    try:
+        pool_path = hub.hf_hub_download(repo_id, filename=f'{pool_rel}/config.json')
+    except EntryNotFoundError:
+        return
+    with open(pool_path) as f:
+        pool_data = json.load(f)
+
+    # get pooling type
+    if pool_data['pooling_mode_cls_token']:
+        return 'cls'
+    elif pool_data['pooling_mode_mean_tokens']:
+        return 'mean'
+    elif pool_data['pooling_mode_max_tokens']:
+        raise NotImplementedError('max pooling not supported')
+    elif pool_data['pooling_mode_mean_sqrt_len_tokens']:
+        raise NotImplementedError('mean-sqrt-len pooling not supported')
+
 class HuggingfaceEmbedding:
     def __init__(
         self, model_id, tokenize_id=None, max_len=None, batch_size=128,
         queue_size=256, device='cuda', dtype=None, onnx=None, save_dir=None, compile=False,
-        pooling_type='cls', trust_remote_code=False
+        pooling_type=None, trust_remote_code=False
     ):
         # get env config
         ONNX_DIR = os.environ.get('ZIGGY_ONNX_DIR', 'onnx')
@@ -118,14 +157,21 @@ class HuggingfaceEmbedding:
             self.tokenizer = AutoTokenizer.from_pretrained(model_id)
             self.model = AutoModel.from_pretrained(model_id, device_map=device_map, torch_dtype=dtype)
 
+        # get pooling type
+        if pooling_type is None:
+            self.pooling_type = detect_pooling_type(model_id)
+            if self.pooling_type is None:
+                raise ValueError('Pooling type not detected, must specify')
+        else:
+            self.pooling_type = pooling_type
+
         # get model info
         self.name = model_id
         self.batch_size = batch_size
         self.max_len = self.model.config.max_position_embeddings if max_len is None else max_len
         self.dims = self.model.config.hidden_size
-        self.pooling_type = pooling_type
 
-    def tokenize_batch(self, text, truncate=False):
+    def tokenize(self, text, truncate=False):
         encode = self.tokenizer(
             text, max_length=self.max_len, padding='max_length', truncation=True,
             return_overflowing_tokens=not truncate, return_tensors='pt'
@@ -158,7 +204,7 @@ class HuggingfaceEmbedding:
         return norm(embed, dim=-1)
 
     def embed_batch(self, text, truncate=False):
-        doc_indices, input_ids, attention_mask = self.tokenize_batch(text, truncate=truncate)
+        doc_indices, input_ids, attention_mask = self.tokenize(text, truncate=truncate)
         indices = batch_indices(input_ids.size(0), self.batch_size)
         embed = torch.cat([
             self.forward_batch(input_ids[i1:i2], attention_mask[i1:i2]) for i1, i2 in indices
@@ -176,7 +222,7 @@ class HuggingfaceEmbedding:
             def loader():
                 yield from batch_generator(text, self.batch_size)
             def tokenizer(texts):
-                return self.tokenize_batch(texts, truncate=truncate)
+                return self.tokenize(texts, truncate=truncate)
             def forwarder(data):
                 doc_indices, input_ids, attention_mask = data
                 indices = batch_indices(input_ids.size(0), self.batch_size)
@@ -280,7 +326,7 @@ class LlamaCppEmbedding:
 
         # load model
         self.model = Llama(
-            model_path, embedding=True, n_batch=max_len, n_gpu_layers=ngl, verbose=verbose
+            model_path, embedding=True, n_batch=max_len, n_ctx=max_len, n_gpu_layers=ngl, verbose=verbose
         )
 
         # get metadata
@@ -288,11 +334,20 @@ class LlamaCppEmbedding:
         self.max_len = max_len
         self.dims = self.model.n_embd()
 
-    def tokenize(self, text):
-        return self.model.tokenize(text.encode('utf-8'))
+    def tokenize(self, text, special=False):
+        if type(text) is str:
+            text = [text]
+            squeeze = True
+        else:
+            squeeze = False
+        ids = [
+            self.model.tokenize(s.encode('utf-8'), special=special)
+            for s in text
+        ]
+        return ids[0] if squeeze else ids
 
     def forward_batch(self, tokens):
-        from llama_cpp import llama_kv_cache_clear, llama_get_embeddings_ith
+        from llama_cpp import llama_kv_cache_clear, llama_get_embeddings_seq
 
         ctx = self.model._ctx
         n_seq = len(tokens)
@@ -311,7 +366,7 @@ class LlamaCppEmbedding:
 
         # store embeddings
         embeds = [
-            llama_get_embeddings_ith(ctx.ctx, i)[:n_embd]
+            llama_get_embeddings_seq(ctx.ctx, i)[:n_embd]
             for i in range(n_seq)
         ]
 
@@ -333,12 +388,12 @@ class LlamaCppEmbedding:
 
         return embeds
 
-    def embed(self, text, threaded=None, truncate=False, normalize=True):
+    def embed(self, text, threaded=None, truncate=False, normalize=True, special=False):
         if type(text) is str:
             text = [text]
 
         # get tokens and length distribution
-        tokens = [self.tokenize(t) for t in text]
+        tokens = self.tokenize(text, special=special)
 
         # handle truncation
         if truncate:

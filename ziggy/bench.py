@@ -27,10 +27,7 @@ TASKS_RETRIEVAL = [
 def task_split(task):
     return 'dev' if task == 'MSMARCO' else 'test'
 
-def profile_embed(
-        model, path, cpu=False, max_len=512, delim='\n', min_len=100, max_rows=None,
-        onnx=True, truncate=False, threaded=True, n_threads=None, verbose=False
-    ):
+def load_model(model, cpu=False, onnx=True, max_len=512, n_threads=None, verbose=False):
     if type(model) is str:
         if model.endswith('.gguf'):
             device = 'cpu' if cpu else 'cuda'
@@ -40,8 +37,9 @@ def profile_embed(
             emb = HuggingfaceEmbedding(model_id=model, max_len=max_len, device=device, onnx=onnx)
     else:
         emb = model
+    return emb
 
-    # split data into chunks
+def load_data(path, max_rows=None):
     if type(path) is str:
         _, ext = os.path.splitext(path)
         if ext == '.jsonl':
@@ -50,18 +48,25 @@ def profile_embed(
             data = (line[:-1] for line in open(path))
     else:
         data = path
+    return data
 
-    splitter = lambda text: text_splitter(text, delim, min_len=min_len, max_len=max_len)
-    chunks = sum((splitter(t) for t in data), [])
+def profile_embed(
+        model, path, cpu=False, max_len=512, delim='\n', min_len=100, max_rows=None,
+        onnx=True, truncate=True, threaded=True, n_threads=None, verbose=False
+    ):
+    emb = load_model(model, cpu=cpu, onnx=onnx, max_len=max_len, n_threads=n_threads, verbose=verbose)
+
+    # split data into chunks
+    data = list(load_data(path, max_rows=max_rows))
 
     # do the embedding
     start = time.time()
-    vecs = emb.embed(chunks, truncate=truncate, threaded=threaded)
+    vecs = emb.embed(data, truncate=truncate, threaded=threaded)
     delta = time.time() - start
 
     # get document stats
-    nchunks = len(chunks)
-    length = torch.tensor([len(d) for d in chunks]).float()
+    nchunks = len(data)
+    length = torch.tensor([len(d) for d in data]).float()
     size_avg = length.mean()
     size_std = length.std()
     speed = nchunks/delta
@@ -82,21 +87,57 @@ def profile_embed(
     print(f'Speed: {speed:.2f} chunks/second')
     print(f'Memory: {mem}')
 
-def check_embed(gguf, repo_id, data, normalize=True, cpu=False, max_len=512, max_rows=None, trust_remote_code=False):
+def profile_tokenizer(
+        model, path, cpu=False, max_len=512, delim='\n', min_len=100, max_rows=None,
+        onnx=True, truncate=True, threaded=True, n_threads=None, verbose=False
+):
+    emb = load_model(model, cpu=cpu, onnx=onnx, max_len=max_len, n_threads=n_threads, verbose=verbose)
+
+    # load data
+    data = list(load_data(path, max_rows=max_rows))
+    if max_len is not None:
+        data = [d[:max_len] for d in data]
+
+    # do the embedding
+    start = time.time()
+    toks = emb.tokenize(data)
+    delta = time.time() - start
+
+    if type(toks) is tuple:
+        toks, attn = toks[1:]
+        length = attn.sum(dim=-1).float()
+    else:
+        length = torch.tensor([len(d) for d in toks]).float()
+
+    # get document stats
+    nchunks = len(data)
+    size_avg = length.mean()
+    size_std = length.std()
+    speed = nchunks/delta
+
+    # print our results
+    print()
+    print(f'Chunks: {nchunks}')
+    print(f'Size: {size_avg:.2f} ± {size_std:.2f}')
+    print(f'Time: {delta:.2f} seconds')
+    print(f'Speed: {speed:.2f} chunks/second')
+
+def check_embed(mod_ll, mod_st, path, normalize=True, cpu=False, max_len=512, max_rows=None, trust_remote_code=False):
     from sentence_transformers import SentenceTransformer
 
     # set up device
     ngl = 0 if cpu else 99
 
     # load models
-    mod_ll = LlamaCppEmbedding(gguf, max_len=max_len, n_gpu_layers=ngl)
-    mod_st = SentenceTransformer(repo_id, trust_remote_code=trust_remote_code)
+    if type(mod_ll) is str:
+        mod_ll = LlamaCppEmbedding(mod_ll, max_len=max_len, n_gpu_layers=ngl)
+    if type(mod_st) is str:
+        mod_st = SentenceTransformer(mod_st, trust_remote_code=trust_remote_code)
 
     # load data
-    if type(data) is str:
-        data = open(data).read().splitlines()
-    if max_rows is not None:
-        data = data[:max_rows]
+    data = list(load_data(path, max_rows=max_rows))
+    if max_len is not None:
+        data = [d[:max_len] for d in data]
 
     # compute embeddings
     emb_ll = mod_ll.embed(data, normalize=normalize, truncate=True).cpu().numpy()
@@ -108,7 +149,7 @@ def check_embed(gguf, repo_id, data, normalize=True, cpu=False, max_len=512, max
     return sim
 
 # check tokenizer individually
-def check_tokenizer(mod_ll, mod_hf, data, max_rows=None):
+def check_tokenizer(mod_ll, mod_hf, path, max_rows=None, max_len=512):
     from llama_cpp import Llama
     from transformers import AutoTokenizer
     from Levenshtein import editops
@@ -121,10 +162,9 @@ def check_tokenizer(mod_ll, mod_hf, data, max_rows=None):
         mod_hf = AutoTokenizer.from_pretrained(mod_hf)
 
     # load data
-    if type(data) is str:
-        data = open(data).read().splitlines()
-    if max_rows is not None:
-        data = data[:max_rows]
+    data = list(load_data(path, max_rows=max_rows))
+    if max_len is not None:
+        data = [d[:max_len] for d in data]
 
     # compute token ids
     ids_ll = [mod_ll.tokenize(text.encode('utf-8')) for text in data]

@@ -15,3 +15,4 @@ ziggy.egg-info
 /extension/libtorch_cuda
 /extension/dist
 /extension/*.egg-info
+/extension/libtorch-*.zip

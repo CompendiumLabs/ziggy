@@ -16,3 +16,4 @@ ziggy.egg-info
 /extension/dist
 /extension/*.egg-info
 /extension/libtorch-*.zip
+/extension/matmul_quant.*.so

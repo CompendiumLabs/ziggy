@@ -2,63 +2,63 @@
 
 #include "matmul_quant_cpu.h"
 
-void test_quantized_cpu() {
-    int64_t dim = 8;
-    int64_t n = 4;
-    int64_t m = 4;
+const int64_t dim = 8;
+const int64_t n = 4;
+const int64_t m = 8;
 
-    Tensor a = torch::ones({n, dim}, at::device(torch::kCPU).dtype(torch::kFloat));
+int main(int argc, char ** argv) {
+    // default params
+    int bits;
+    float scale;
+    float zero_point;
+
+    // get number of bits and scale
+    if (argc > 1) {
+        bits = std::stoi(argv[1]);
+    } else {
+        bits = 8;
+    }
+    if (argc > 2) {
+        scale = std::stof(argv[2]);
+    } else {
+        scale = 1.0f;
+    }
+    if (argc > 3) {
+        zero_point = std::stof(argv[3]);
+    } else {
+        zero_point = float(1 << (bits - 1)) - 0.5;
+    }
+
+    std::cout << "Params" << std::endl;
+    std::cout << "bits: " << bits << std::endl;
+    std::cout << "scale: " << scale << std::endl;
+    std::cout << "zero_point: " << zero_point << std::endl;
+    std::cout << std::endl;
+
+    // make first tensor
+    std::vector<float> av(n * dim, 0.1f);
+    Tensor a = torch::from_blob(av.data(), {n, dim}, at::device(torch::kCPU).dtype(torch::kFloat));
+    std::cout << "Original:" << std::endl;
+    std::cout << a << std::endl;
+    std::cout << std::endl;
+
+    // make second tensor
     Tensor b = torch::ones({m, dim}, at::device(torch::kCPU).dtype(torch::kFloat));
 
-    unsigned int bits = 4;
-    float scale = 1.0f;
-    float zero_point = 7.0f;
-
+    // quantize and pack
     Tensor qa = quantize_and_pack_cpu(a, bits, scale, zero_point);
-    Tensor c = matmul_quant_cpu(qa, b.transpose(0, 1), bits, scale, zero_point);
+    std::cout << "Quantized:" << std::endl;
+    std::cout << qa << std::endl;
+    std::cout << std::endl;
 
-    std::cout << a.sizes() << std::endl << a << std::endl;
-    std::cout << b.sizes() << std::endl << b << std::endl;
-    std::cout << qa.sizes() << std::endl << qa << std::endl;
-    std::cout << c.sizes() << std::endl << c << std::endl;
-}
-
-void test_pack_cpu() {
-    int64_t dim = 8;
-    int64_t n = 4;
-
-    unsigned int bits = 4;
-    float scale = 1.0f;
-    float zero_point = 7.0f;
-
-    Tensor a = torch::ones({n, dim}, at::device(torch::kCPU).dtype(torch::kFloat));
-    Tensor qa = quantize_and_pack_cpu(a, bits, scale, zero_point);
-
-    std::cout << a.sizes() << std::endl << a << std::endl;
-    std::cout << qa.sizes() << std::endl << qa << std::endl;
-}
-
-void test_unpack_cpu() {
-    int64_t dim = 8;
-    int64_t n = 4;
-
-    unsigned int bits = 4;
-    float scale = 1.0f;
-    float zero_point = 7.0f;
-
-    Tensor a = torch::ones({n, dim}, at::device(torch::kCPU).dtype(torch::kFloat));
-    Tensor qa = quantize_and_pack_cpu(a, bits, scale, zero_point);
+    // dequantize and unpack
     Tensor a1 = dequantize_and_unpack_cpu(qa, torch::kFloat, bits, scale, zero_point);
-
-    std::cout << a.sizes() << std::endl << a << std::endl;
-    std::cout << qa.sizes() << std::endl << qa << std::endl;
-    std::cout << a1.sizes() << std::endl << a1 << std::endl;
-}
-
-int main() {
-    test_quantized_cpu();
+    std::cout << "Dequantized:" << std::endl;
+    std::cout << a1 << std::endl;
     std::cout << std::endl;
-    test_pack_cpu();
-    std::cout << std::endl;
-    test_unpack_cpu();
+
+    // matmul results
+    Tensor c = matmul_quant_cpu(qa, b.transpose(0, 1), bits, scale, zero_point);
+    std::cout << "Matmul:" << std::endl;
+    std::cout << c << std::endl;
 }

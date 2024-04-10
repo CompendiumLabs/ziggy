@@ -1,3 +1,4 @@
+#include <math.h>
 #include <torch/torch.h>
 #include <immintrin.h>
 #include <ATen/ParallelOpenMP.h>
@@ -82,7 +83,9 @@ inline void quant_pack_float_cpu(float* a, uint8_t* b, int64_t sk, int64_t tak, 
 
         for (int s = 0; s < 8; s += bits) {
             vala_f = (*posa);
-            vala_i = (uint8_t)std::max(0.0f, std::min(vala_f / scale + zero_point, pMax_f));
+            vala_f = vala_f / scale + zero_point;
+            vala_f = std::max(0.0f, std::min(pMax_f, vala_f));
+            vala_i = (uint8_t)round(vala_f);
             valb |= vala_i << s;
             posa += tak;
         }

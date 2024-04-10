@@ -1,6 +1,7 @@
 // matmul_quant_cuda testing
 
 #include <string>
+#include <vector>
 
 #include "matmul_quant_cuda.h"
 
@@ -37,12 +38,16 @@ int main(int argc, char ** argv) {
     std::cout << "zero_point: " << zero_point << std::endl;
     std::cout << std::endl;
 
-    // base tensors
-    Tensor a = torch::ones({n, dim}, at::device(torch::kCUDA).dtype(torch::kFloat));
-    Tensor b = torch::ones({m, dim}, at::device(torch::kCUDA).dtype(torch::kFloat));
+    // make first tensor
+    std::vector<float> av(n * dim, 0.1f);
+    Tensor a0 = torch::from_blob(av.data(), {n, dim}, at::device(torch::kCPU).dtype(torch::kFloat));
+    Tensor a = a0.to(at::device(torch::kCUDA));
     std::cout << "Original:" << std::endl;
     std::cout << a << std::endl;
     std::cout << std::endl;
+
+    // make second tensor
+    Tensor b = torch::ones({m, dim}, at::device(torch::kCUDA).dtype(torch::kFloat));
 
     // quantize and pack
     Tensor qa = quantize_and_pack_cuda(a, bits, scale, zero_point);

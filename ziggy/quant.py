@@ -139,6 +139,7 @@ class QuantSpec:
 
 Half = QuantSpec(QuantType.half)
 Float = QuantSpec(QuantType.float)
+Binary = QuantSpec(QuantType.qint1, scale=1.0, zero_point=0.5)
 
 class Accessor:
     def __init__(self, data):

@@ -111,23 +111,22 @@ class QuantSpec:
                 vec, self.bits, self.scale, self.zero_point
             )
         else:
-            return vec
+            return vec.to(dtype=self.dtype)
 
     def dequantize(self, vec, dtype=None):
+        # determine output dtype
+        if dtype == None:
+            dtype = torch.half if vec.device == 'cuda' else torch.float
+        if dtype not in (torch.half, torch.float):
+            raise ValueError(f'Unsupported dtype: {dtype}')
+
         if self.is_quantized:
-            if dtype == None:
-                dtype_str = 'half' if vec.device == 'cuda' else 'float'
-            elif dtype == torch.half:
-                dtype_str = 'half'
-            elif dtype == torch.float:
-                dtype_str = 'float'
-            else:
-                raise ValueError(f'Unsupported dtype: {dtype}')
+            dtype_str = 'half' if dtype == torch.half else 'float'
             return matmul_quant.dequantize_and_unpack(
                 vec, dtype_str, self.bits, self.scale, self.zero_point
             )
         else:
-            return vec
+            return vec.to(dtype=dtype)
 
     def matmul(self, a, b):
         if self.is_quantized:

@@ -181,6 +181,10 @@ class TorchVectorIndex:
             sel = torch.isin(self.groups[:len(self)], ids)
             return torch.nonzero(sel).squeeze()
 
+    def group_labels(self, groups):
+        mask = self.group_mask(groups).tolist()
+        return [self.labels[i] for i in mask]
+
     def similarity(self, vecs, groups=None, return_labels=False, squeeze=True):
         vecs = torch.atleast_2d(vecs)
         mask = self.group_mask(groups)

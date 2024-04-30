@@ -190,7 +190,8 @@ class HuggingfaceEmbedding:
         token_type_ids = torch.zeros(input_ids.shape, dtype=torch.int64, device=self.device)
 
         # get model output
-        output = self.model(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)
+        with torch.no_grad():
+            output = self.model(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)
         state = output[0]
 
         # get sentence embeddings

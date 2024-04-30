@@ -65,22 +65,17 @@ def stream_jsonl(path, max_rows=None):
 # index — TorchVectorIndex {label: vec}
 class TextDatabase:
     def __init__(
-            self, embed=None, embed_device='cuda', index_device='cuda', onnx=True,
-            batch_size=128, allocate=True, dims=None, qspec=Float, **kwargs
+            self, embed=None, device='cuda', onnx=True, batch_size=128,
+            allocate=True, dims=None, qspec=Float, **kwargs
         ):
-        # instantiate embedding model
-        if type(embed) is str:
-            self.embed = HuggingfaceEmbedding(embed, device=embed_device, onnx=True, batch_size=batch_size)
-        else:
-            self.embed = embed
-
-        # get embedding dimension
+        # store embedding model
+        self.embed = embed
         self.dims = self.embed.dims if dims is None else dims
 
         # initalize index
         if allocate:
             self.text = {}
-            self.index = TorchVectorIndex(self.dims, device=index_device, qspec=qspec, **kwargs)
+            self.index = TorchVectorIndex(self.dims, device=device, qspec=qspec, **kwargs)
 
     @classmethod
     def load(cls, path, embed=None, device='cuda', check_embed=True, **kwargs):
@@ -181,12 +176,12 @@ class TextDatabase:
 # dindex: TorchVectorIndex {name: vec}
 class DocumentDatabase(TextDatabase):
     def __init__(
-        self, index_device='cuda', allocate=True, dims=None, qspec=Float,
+        self, device='cuda', allocate=True, dims=None, qspec=Float,
         delim='\n', min_len=1, max_len=None, **kwargs
     ):
         # init core text database
         super().__init__(
-            index_device=index_device, allocate=allocate, dims=dims, qspec=qspec, **kwargs
+            device=device, allocate=allocate, dims=dims, qspec=qspec, **kwargs
         )
 
         # set up document parsing
@@ -194,7 +189,7 @@ class DocumentDatabase(TextDatabase):
 
         # possibly allocated document index
         if allocate:
-            self.dindex = TorchVectorIndex(self.dims, device=index_device, qspec=qspec)
+            self.dindex = TorchVectorIndex(self.dims, device=device, qspec=qspec)
 
     @classmethod
     def from_jsonl(
@@ -214,10 +209,10 @@ class DocumentDatabase(TextDatabase):
         return self
 
     @classmethod
-    def load(cls, path, embed=None, index_device='cuda', **kwargs):
-        data = torch.load(path, map_location=index_device) if type(path) is str else path
-        self = super().load(data, embed=embed, index_device=index_device, **kwargs)
-        self.dindex = TorchVectorIndex.load(data['dindex'], device=index_device)
+    def load(cls, path, embed=None, device='cuda', **kwargs):
+        data = torch.load(path, map_location=device) if type(path) is str else path
+        self = super().load(data, embed=embed, device=device, **kwargs)
+        self.dindex = TorchVectorIndex.load(data['dindex'], device=device)
         return self
 
     def save(self, path=None):

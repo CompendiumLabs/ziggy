@@ -134,7 +134,7 @@ class QuantSpec:
                 a, b, self.bits, self.scale, self.zero_point
             )
         else:
-            return a @ b
+            return a @ b.to(dtype=self.dtype)
 
 Half = QuantSpec(QuantType.half)
 Float = QuantSpec(QuantType.float)

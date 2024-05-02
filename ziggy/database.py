@@ -66,7 +66,7 @@ def stream_jsonl(path, max_rows=None):
 class TextDatabase:
     def __init__(
             self, embed=None, device='cuda', onnx=True, batch_size=128,
-            allocate=True, dims=None, qspec=Float, **kwargs
+            allocate=True, dims=None, qspec=None, **kwargs
         ):
         # store embedding model
         self.embed = embed
@@ -97,6 +97,24 @@ class TextDatabase:
         self.index = TorchVectorIndex.load(data['index'], device=device)
         return self
 
+    @classmethod
+    def from_jsonl(
+        cls, path, name_col='title', text_col='text', doc_batch=1024, max_rows=None,
+        progress=True, threaded=True, truncate=False, **kwargs
+    ):
+        self = cls(**kwargs)
+        n_total = 0
+        lines = stream_jsonl(path, max_rows=max_rows)
+        for i, batch in enumerate(batch_generator(lines, doc_batch)):
+            labels, text = zip(*[
+                (row[name_col], row[text_col]) for row in batch
+            ])
+            self.add(labels, text, threaded=threaded, truncate=truncate)
+            n_total += len(batch)
+            if progress:
+                print(f'{i:5d}: {n_total} documents')
+        return self
+
     def save(self, path=None):
         data = {
             'embed': self.embed.name,
@@ -120,14 +138,18 @@ class TextDatabase:
     def index_vecs(self, labels, vecs, groups=None):
         self.index.add(labels, vecs, groups=groups)
 
-    def add(self, labels, text, groups=None, threaded=True):
+    def add(self, labels, text, groups=None, **kwargs):
         # check for empty
         assert(len(labels) == len(text))
         if len(labels) == 0:
             return
 
+        # deduplicate on labels
+        docs = {l: t for l, t in zip(labels, text)}
+        labels, text = zip(*docs.items())
+
         # embed and index
-        vecs = self.embed.embed(text, threaded=threaded)
+        vecs = self.embed.embed(text, **kwargs)
         self.index_text(labels, text)
         self.index_vecs(labels, vecs, groups=groups)
         return vecs
@@ -176,7 +198,7 @@ class TextDatabase:
 # dindex: TorchVectorIndex {name: vec}
 class DocumentDatabase(TextDatabase):
     def __init__(
-        self, device='cuda', allocate=True, dims=None, qspec=Float,
+        self, device='cuda', allocate=True, dims=None, qspec=None,
         delim='\n', min_len=1, max_len=None, **kwargs
     ):
         # init core text database
@@ -194,7 +216,7 @@ class DocumentDatabase(TextDatabase):
     @classmethod
     def from_jsonl(
         cls, path, name_col='title', text_col='text', doc_batch=1024, max_rows=None,
-        progress=True, threaded=True, **kwargs
+        progress=True, threaded=True, truncate=False, **kwargs
     ):
         self = cls(**kwargs)
         n_total = 0
@@ -202,7 +224,7 @@ class DocumentDatabase(TextDatabase):
         for i, batch in enumerate(batch_generator(lines, doc_batch)):
             self.add_docs([
                 (row[name_col], row[text_col]) for row in batch
-            ], threaded=threaded)
+            ], threaded=threaded, truncate=truncate)
             n_total += len(batch)
             if progress:
                 print(f'{i:5d}: {n_total} documents')
@@ -223,17 +245,18 @@ class DocumentDatabase(TextDatabase):
         else:
             torch.save(data, path)
 
+    # this will implicitly deduplicate input docs
     def process_docs(self, docs):
         targ = docs.items() if type(docs) is dict else docs
         chunks = {k: self.splitter(v) for k, v in targ}
         return {k: v for k, v in chunks.items() if len(v) > 0}
 
-    def index_chunks(self, chunks, threaded=True):
+    def index_chunks(self, chunks, **kwargs):
         # convert to flat and add
         labels = [(k, i) for k, v in chunks.items() for i in range(len(v))]
         text = list(chain.from_iterable(chunks.values()))
         groups = [d for d, _ in labels]
-        vecs = self.add(labels, text, groups=groups, threaded=threaded)
+        vecs = self.add(labels, text, groups=groups, **kwargs)
 
         # add aggregated document embeddings
         sizes = [len(v) for v in chunks.values()]
@@ -242,9 +265,9 @@ class DocumentDatabase(TextDatabase):
         ], dim=0), dim=-1)
         self.dindex.add(list(chunks), dvecs)
 
-    def add_docs(self, texts, threaded=True):
+    def add_docs(self, texts, **kwargs):
         chunks = self.process_docs(texts)
-        self.index_chunks(chunks, threaded=threaded)
+        self.index_chunks(chunks, **kwargs)
 
     def remove_docs(self, names):
         # remove from index
@@ -265,19 +288,19 @@ class DocumentDatabase(TextDatabase):
             '\n\n'.join(cdict.get(d, [])) for d in docs
         ]
 
-    def search_docs(self, query, top_k=25, **kwargs):
+    def search_docs(self, query, top_k=25, return_simil=False):
         if type(query) is str:
             query = self.embed.embed(query).squeeze()
-        return self.dindex.search(query, top_k, return_simil=False)
+        return self.dindex.search(query, top_k, return_simil=return_simil)
 
-    def search_chunks(self, query, top_d=None, **kwargs):
+    def search_chunks(self, query, top_d=None, return_simil=False):
         if type(query) is str:
             query = self.embed.embed(query).squeeze()
         if top_d is None:
             docs = None
         else:
             docs = self.search_docs(query, top_k=top_d)
-        return self.search(query, groups=docs, **kwargs)
+        return self.search(query, groups=docs, return_simil=return_simil)
 
 ##
 ## filesystem interface

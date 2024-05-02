@@ -76,6 +76,10 @@ class TorchVectorIndex:
         exist = self.labels.intersection(slabs)
         novel = slabs - exist
 
+        # deduplicate inputs
+        if len(labs) != len(slabs):
+            raise Exception(f'Duplicate labels found in input.')
+
         # raise if trying invalid strict add
         if strict and len(exist) > 0:
             raise Exception(f'Trying to add existing labels in strict mode.')

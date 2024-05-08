@@ -25,14 +25,17 @@ ceil_div = lambda x, y: (x + y - 1) // y
 # assumes contiguous data layout
 @triton.jit
 def quantize_kernel(
-    X, Y, N, K,
+    X, Y, N, K, K1,
     scale, zero_point,
-    BITS: tl.constexpr
+    BITS: tl.constexpr,
+    BLOCK_SIZE_N: tl.constexpr,
+    BLOCK_SIZE_K: tl.constexpr,
+    BLOCK_SIZE_K1: tl.constexpr,
 ):
     # quantization params
     QMASK = (1 << BITS) - 1
     QFACT = 8 // BITS
-    BLOCK_SIZE_K1 = BLOCK_SIZE_K // QFACT
+    QMASK_TY = tl.full((), QMASK, dtype=tl.uint8)
 
     # load block data
     pid_n = tl.program_id(0)
@@ -40,23 +43,23 @@ def quantize_kernel(
 
     # get row indices for each axis
     rn = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % N
-    rk = pid_k * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K, QFACT)
+    rk = pid_k * BLOCK_SIZE_K + QFACT * tl.arange(0, BLOCK_SIZE_K1)
 
     # get first data pointer
     X1 = X + (rn[:, None] * K + rk[None, :])
 
     # create output tensor
-    K1 = K // QFACT
-    out = tl.zeros((N, K1), dtype=tl.uint8)
+    out = tl.zeros((BLOCK_SIZE_N, BLOCK_SIZE_K1), dtype=tl.uint8)
 
     # quantize data
     for q in range(0, 8, BITS):
+        q_ty = tl.full((), q, dtype=tl.uint8)
         x = tl.load(X1)
-        xf = x / scale + zero_point
-        xi = xf.to(tl.uint8, fp_downcast='rtne')
-        out |= (xi & QMASK) << q
+        xf = tl.clamp(x / scale + zero_point, 0.0, 255.0)
+        xi = (xf + 0.5).to(tl.uint8) # round to nearest
+        out |= (xi & QMASK_TY) << q_ty
         X1 += 1
-    
+
     # store quantized data
     rk1 = pid_k * BLOCK_SIZE_K1 + tl.arange(0, BLOCK_SIZE_K1)
     Y = Y + (rn[:, None] * K1 + rk1[None, :])
@@ -183,12 +186,20 @@ def quantize(x, bits, scale, zero_point):
     device = x.device
     N, K = x.shape
 
+    # shape params
+    QFACT = 8 // bits
+    K1 = K // QFACT
+    BLOCK_SIZE_K1 = BLOCK_SIZE_K // QFACT
+
     # output shape
-    y = torch.empty((N, K), device=device, dtype=torch.uint8)
+    y = torch.empty((N, K1), device=device, dtype=torch.uint8)
 
     # call kernel
-    grid = ceil_div(N, BLOCK_SIZE)
-    quantize_kernel[grid](x, y, N, K, scale, zero_point, BITS=bits)
+    grid = ceil_div(N, BLOCK_SIZE_N), ceil_div(K, BLOCK_SIZE_K)
+    quantize_kernel[grid](
+        x, y, N, K, K1, scale, zero_point, BITS=bits,
+        BLOCK_SIZE_N=BLOCK_SIZE_N, BLOCK_SIZE_K=BLOCK_SIZE_K, BLOCK_SIZE_K1=BLOCK_SIZE_K1
+    )
 
     # return result
     return y
@@ -200,6 +211,7 @@ def matmul(a, b, bits=None, scale=None, zero_point=None, dtype=torch.float16):
 
     # dtype information
     if bits is not None:
+        assert(bits in [1, 2, 4, 8])
         assert(a.dtype == torch.uint8)
         assert(b.dtype == torch.uint8)
         assert(scale is not None)

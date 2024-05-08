@@ -15,7 +15,7 @@ import huggingface_hub as hub
 from huggingface_hub.utils import EntryNotFoundError
 
 from .utils import (
-    pipeline_threads, batch_generator, batch_indices, list_splitter, cumsum, cumul_bounds, RequestTracker
+    pipeline_threads, batch_generator, batch_indices, list_splitter, cumsum, cumul_bounds, RequestTracker, l2mean
 )
 
 ##
@@ -183,7 +183,7 @@ class HuggingfaceEmbedding:
             overflow_to_sample_mapping = encode.overflow_to_sample_mapping
         return overflow_to_sample_mapping, encode.input_ids, encode.attention_mask
 
-    def forward_batch(self, input_ids, attention_mask):
+    def forward_batch(self, input_ids, attention_mask, pooling_type=None, normalize=True):
         # prepare model inputs on device
         input_ids = input_ids.to(self.device)
         attention_mask = attention_mask.to(self.device)
@@ -195,24 +195,30 @@ class HuggingfaceEmbedding:
         state = output[0]
 
         # get sentence embeddings
-        if self.pooling_type == 'mean':
+        pooling_type = self.pooling_type if pooling_type is None else pooling_type
+        if pooling_type == 'mean':
             mask = attention_mask.float().unsqueeze(-1)
             embed = (state*mask).sum(1)/mask.sum(1)
-        elif self.pooling_type == 'cls':
+        elif pooling_type == 'cls':
             embed = state[:,0,:]
+        elif pooling_type == 'none':
+            embed = torch.where(attention_mask.unsqueeze(-1) == 1, state, torch.nan)
 
-        # return normalized embedding
-        return norm(embed, dim=-1)
+        # normalized embedding
+        if normalize:
+            embed = norm(embed, dim=-1)
 
-    def embed_batch(self, text, truncate=False):
+        return embed
+
+    def embed_batch(self, text, truncate=False, **kwargs):
         doc_indices, input_ids, attention_mask = self.tokenize(text, truncate=truncate)
         indices = batch_indices(input_ids.size(0), self.batch_size)
         embed = torch.cat([
-            self.forward_batch(input_ids[i1:i2], attention_mask[i1:i2]) for i1, i2 in indices
+            self.forward_batch(input_ids[i1:i2], attention_mask[i1:i2], **kwargs) for i1, i2 in indices
         ])
         return doc_indices, embed
 
-    def embed(self, text, threaded=False, truncate=False, normalize=True):
+    def embed(self, text, threaded=False, truncate=False, **kwargs):
         # handle unit case
         if type(text) is str:
             text = [text]
@@ -228,7 +234,8 @@ class HuggingfaceEmbedding:
                 doc_indices, input_ids, attention_mask = data
                 indices = batch_indices(input_ids.size(0), self.batch_size)
                 embed = torch.cat([
-                    self.forward_batch(input_ids[i1:i2], attention_mask[i1:i2]) for i1, i2 in indices
+                    self.forward_batch(input_ids[i1:i2], attention_mask[i1:i2], **kwargs)
+                    for i1, i2 in indices
                 ])
                 results.append((doc_indices, embed))
 
@@ -237,7 +244,9 @@ class HuggingfaceEmbedding:
         else:
             # embed chunks and average
             results = [
-                self.embed_batch(chunk, truncate=truncate) for chunk in batch_generator(text, self.batch_size)
+                self.embed_batch(
+                    chunk, truncate=truncate, **kwargs
+                ) for chunk in batch_generator(text, self.batch_size)
             ]
 
         # unpack offsets and embeds
@@ -249,14 +258,10 @@ class HuggingfaceEmbedding:
         _, sizes = torch.unique(indices, return_counts=True)
 
         # aggregate to document level
-        embed0 = torch.cat(embeds, dim=0)
+        embed0 = torch.cat(embeds)
         embed = torch.stack([
-            embed0[i:j,:].mean(dim=0) for i, j in cumul_bounds(sizes)
-        ], dim=0)
-
-        # return normalized vectors
-        if normalize:
-            embed = norm(embed, dim=-1)
+            l2mean(embed0[i:j], dim=0) for i, j in cumul_bounds(sizes)
+        ])
 
         # return normalized vectors
         return embed
@@ -318,21 +323,26 @@ def pack_batches(sizes, max_len):
     return batches
 
 class LlamaCppEmbedding:
-    def __init__(self, model_path, max_len=512, device='cuda', verbose=False, **kwargs):
-        from llama_cpp import Llama
+    def __init__(self, model_path, max_len=512, pooling_type=None, device='cuda', verbose=False, **kwargs):
+        from llama_cpp import Llama, llama_get_pooling_type
 
         # set up device
         ngl = 0 if device == 'cpu' else 99
         self.device = device
 
+        # get pooling type
+        pooling_type = LLAMA_POOLING_TYPE_UNSPECIFIED if pooling_type is None else pooling_type
+
         # load model
         self.model = Llama(
-            model_path, embedding=True, n_batch=max_len, n_ctx=max_len, n_gpu_layers=ngl, verbose=verbose
+            model_path, embedding=True, n_batch=max_len, n_ctx=max_len,
+            pooling_type=pooling_type, n_gpu_layers=ngl, verbose=verbose
         )
 
         # get metadata
         self.name = os.path.basename(model_path)
         self.max_len = max_len
+        self.pooling_type = llama_get_pooling_type(self.model._ctx)
         self.dims = self.model.n_embd()
 
     def tokenize(self, text, special=False):
@@ -348,17 +358,22 @@ class LlamaCppEmbedding:
         return ids[0] if squeeze else ids
 
     def forward_batch(self, tokens):
-        from llama_cpp import llama_kv_cache_clear, llama_get_embeddings_seq
+        from llama_cpp import (
+            llama_kv_cache_clear, llama_get_embeddings, llama_get_embeddings_seq,
+            LLAMA_POOLING_TYPE_NONE
+        )
 
         ctx = self.model._ctx
         n_seq = len(tokens)
         n_embd = self.model.n_embd()
-        n_toks = sum(len(toks) for toks in tokens)
+
+        # check total batch size
+        n_toks = [len(toks) for toks in tokens]
+        assert sum(n_toks) <= self.max_len
 
         # add tokens to batch
         self.model._batch.reset()
         for seq_id, toks in enumerate(tokens):
-            assert len(toks) <= self.max_len
             self.model._batch.add_sequence(toks, seq_id, False)
 
         # run model on batch
@@ -366,15 +381,25 @@ class LlamaCppEmbedding:
         ctx.decode(self.model._batch)
 
         # store embeddings
-        embeds = [
-            llama_get_embeddings_seq(ctx.ctx, i)[:n_embd]
-            for i in range(n_seq)
-        ]
+        if self.pooling_type == LLAMA_POOLING_TYPE_NONE:
+            embeds_ptr = llama_get_embeddings(ctx.ctx)
+            embeds = [
+                [embeds_ptr[k*n_embd:(k+1)*n_embd] for k in range(i, j)]
+                for i, j in cumul_bounds(n_toks)
+            ]
+        else:
+            embeds = [
+                llama_get_embeddings_seq(ctx.ctx, i)[:n_embd]
+                for i in range(n_seq)
+            ]
 
-        # return on device
-        return torch.tensor(embeds, device=self.device, dtype=torch.float32)
+        # return as lists
+        return embeds
 
     def forward(self, tokens):
+        from llama_cpp import LLAMA_POOLING_TYPE_NONE
+        assert self.pooling_type != LLAMA_POOLING_TYPE_NONE
+
         # plan batch contents
         sizes = [len(toks) for toks in tokens]
         batches = pack_batches(sizes, self.max_len)
@@ -385,7 +410,8 @@ class LlamaCppEmbedding:
         # compute embeddings
         for idxs in batches:
             toks = [tokens[i] for i in idxs]
-            embeds[idxs] = self.forward_batch(toks)
+            embs = self.forward_batch(toks)
+            embeds[idxs] = torch.tensor(embs, device=self.device, dtype=torch.float32)
 
         return embeds
 
@@ -406,16 +432,15 @@ class LlamaCppEmbedding:
         # run forward compute
         embeds = self.forward(chunks)
 
-        # aggreate to document level
-        if not truncate:
-            embeds = torch.stack([
-                embeds[i:j,:].mean(dim=0) if j > i + 1 else embeds[i,:]
-                for i, j in cumul_bounds(splits)
-            ], dim=0)
-
         # return normalized vectors
         if normalize:
             embeds = norm(embeds, dim=-1)
+
+        # aggreate to document level
+        if not truncate and max(splits) > 1:
+            embeds = torch.stack([
+                l2mean(embeds[i:j], dim=0) for i, j in cumul_bounds(splits)
+            ])
 
         return embeds
 

@@ -115,4 +115,5 @@ class Guffy:
 
     def get_tensor(self, name):
         info = self.get_tensor_meta(name)
-        return np.asarray(info.data).reshape(info.shape)
+        shape = list(reversed(info.shape))
+        return np.asarray(info.data).reshape(shape)

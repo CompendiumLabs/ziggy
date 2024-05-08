@@ -65,6 +65,16 @@ def list_splitter(text, maxlen):
         yield text[i:j]
 
 ##
+## math
+##
+
+# preserves l2-normed property
+def l2mean(x, dim=0):
+    if x.size(dim) == 1:
+        return x.squeeze(dim)
+    return x.square().mean(dim=dim).sqrt()
+
+##
 ## importing
 ##
 

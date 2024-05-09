@@ -33,8 +33,8 @@ def quantize_kernel(
     BLOCK_SIZE_K1: tl.constexpr,
 ):
     # quantization params
-    QMASK = (1 << BITS) - 1
     QFACT = 8 // BITS
+    QMASK = (1 << BITS) - 1
     QMASK_TY = tl.full((), QMASK, dtype=tl.uint8)
 
     # load block data
@@ -42,10 +42,11 @@ def quantize_kernel(
     pid_k = tl.program_id(1)
 
     # get row indices for each axis
-    rn = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % N
+    rn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
     rk = pid_k * BLOCK_SIZE_K + QFACT * tl.arange(0, BLOCK_SIZE_K1)
 
     # get first data pointer
+    mask = (rn[:, None] < N) & (rk[None, :] < K)
     X1 = X + (rn[:, None] * K + rk[None, :])
 
     # create output tensor
@@ -62,9 +63,66 @@ def quantize_kernel(
 
     # store quantized data
     rk1 = pid_k * BLOCK_SIZE_K1 + tl.arange(0, BLOCK_SIZE_K1)
+    mask1 = (rn[:, None] < N) & (rk1[None, :] < K1)
     Y = Y + (rn[:, None] * K1 + rk1[None, :])
-    mask = (rn[:, None] < N) & (rk1[None, :] < K1)
-    tl.store(Y, out, mask=mask)
+    tl.store(Y, out, mask=mask1)
+
+##
+## dequantize
+##
+
+# requires K divisible by BLOCK_SIZE_K
+# requires BLOCK_SIZE_K divisble by QFACT
+# assumes contiguous data layout
+@triton.jit
+def dequantize_kernel(
+    X, Y, N, K, K1,
+    scale, zero_point,
+    BITS: tl.constexpr,
+    BLOCK_SIZE_N: tl.constexpr,
+    BLOCK_SIZE_K: tl.constexpr,
+    BLOCK_SIZE_K1: tl.constexpr,
+):
+    # quantization params
+    QFACT = 8 // BITS
+    QMASK = (1 << BITS) - 1
+    QMASK_TY = tl.full((), QMASK, dtype=tl.uint8)
+
+    # output params
+    dtype = Y.dtype.element_ty
+    scale_ty = tl.full((), scale, dtype=dtype)
+    zero_point_ty = tl.full((), zero_point, dtype=dtype)
+
+    # load block data
+    pid_n = tl.program_id(0)
+    pid_k = tl.program_id(1)
+
+    # get row indices for each axis
+    rn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+    rk1 = pid_k * BLOCK_SIZE_K1 + tl.arange(0, BLOCK_SIZE_K1)
+    rk = pid_k * BLOCK_SIZE_K + QFACT * tl.arange(0, BLOCK_SIZE_K1)
+
+    # load quantized data
+    mask1 = (rn[:, None] < N) & (rk1[None, :] < K1)
+    X1 = X + (rn[:, None] * K1 + rk1[None, :])
+    x = tl.load(X1, mask=mask1)
+
+    # create output tensor
+    out = tl.zeros((BLOCK_SIZE_N, BLOCK_SIZE_K1), dtype=dtype)
+
+    # quantize data
+    for q in range(0, 8, BITS):
+        # unpack quantized data
+        q_ty = tl.full((), q, dtype=tl.uint8)
+        xi = (x >> q_ty) & QMASK_TY
+        xf = xi.to(dtype)
+        out = scale_ty * (xf - zero_point_ty)
+
+        # store dequantized data
+        mask = (rn[:, None] < N) & (rk[None, :] < K)
+        Y1 = Y + (rn[:, None] * K + rk[None, :])
+        tl.store(Y1, out, mask=mask)
+        rk += 1
 
 ##
 ## matmul
@@ -197,6 +255,29 @@ def quantize(x, bits, scale, zero_point):
     # call kernel
     grid = ceil_div(N, BLOCK_SIZE_N), ceil_div(K, BLOCK_SIZE_K)
     quantize_kernel[grid](
+        x, y, N, K, K1, scale, zero_point, BITS=bits,
+        BLOCK_SIZE_N=BLOCK_SIZE_N, BLOCK_SIZE_K=BLOCK_SIZE_K, BLOCK_SIZE_K1=BLOCK_SIZE_K1
+    )
+
+    # return result
+    return y
+
+def dequantize(x, bits, scale, zero_point, dtype=torch.float16):
+    # tensor information
+    device = x.device
+    N, K1 = x.shape
+
+    # shape params
+    QFACT = 8 // bits
+    K = QFACT * K1
+    BLOCK_SIZE_K1 = BLOCK_SIZE_K // QFACT
+
+    # output shape
+    y = torch.empty((N, K), device=device, dtype=dtype)
+
+    # call kernel
+    grid = ceil_div(N, BLOCK_SIZE_N), ceil_div(K, BLOCK_SIZE_K)
+    dequantize_kernel[grid](
         x, y, N, K, K1, scale, zero_point, BITS=bits,
         BLOCK_SIZE_N=BLOCK_SIZE_N, BLOCK_SIZE_K=BLOCK_SIZE_K, BLOCK_SIZE_K1=BLOCK_SIZE_K1
     )

@@ -98,7 +98,7 @@ __global__ void matmul_quant_half_kernel(uint8_t* a, __half* b, __half* c, int64
 
 // we need to use unsigned intN packing here
 template <unsigned int bits>
-__global__ void quantize_and_pack_float(float* a, uint8_t* b, int64_t sn, int64_t sk, int64_t tan, int64_t tak, float scale, float zero_point) {
+__global__ void quantize_float_kernel(float* a, uint8_t* b, int64_t sn, int64_t sk, int64_t tan, int64_t tak, float scale, float zero_point) {
     constexpr unsigned int qFact = 8 / bits;
     constexpr unsigned int pMax = (1 << bits) - 1;
     constexpr float pMax_f = (float)pMax;
@@ -131,7 +131,7 @@ __global__ void quantize_and_pack_float(float* a, uint8_t* b, int64_t sn, int64_
 }
 
 template <unsigned int bits>
-__global__ void quantize_and_pack_half(__half* a, uint8_t* b, int64_t sn, int64_t sk, int64_t tan, int64_t tak, float scale, float zero_point) {
+__global__ void quantize_half_kernel(__half* a, uint8_t* b, int64_t sn, int64_t sk, int64_t tan, int64_t tak, float scale, float zero_point) {
     constexpr unsigned int qFact = 8 / bits;
     constexpr unsigned int pMax = (1 << bits) - 1;
 
@@ -167,7 +167,7 @@ __global__ void quantize_and_pack_half(__half* a, uint8_t* b, int64_t sn, int64_
 }
 
 template <unsigned int bits>
-__global__ void dequantize_and_unpack_float(uint8_t* a, float* b, int64_t sn, int64_t sk, float scale, float zero_point) {
+__global__ void dequantize_float_kernel(uint8_t* a, float* b, int64_t sn, int64_t sk, float scale, float zero_point) {
     constexpr unsigned int qFact = 8 / bits;
     constexpr unsigned int pMax = (1 << bits) - 1;
     constexpr float pMax_f = (float)pMax;
@@ -199,7 +199,7 @@ __global__ void dequantize_and_unpack_float(uint8_t* a, float* b, int64_t sn, in
 }
 
 template <unsigned int bits>
-__global__ void dequantize_and_unpack_half(uint8_t* a, __half* b, int64_t sn, int64_t sk, float scale, float zero_point) {
+__global__ void dequantize_half_kernel(uint8_t* a, __half* b, int64_t sn, int64_t sk, float scale, float zero_point) {
     constexpr unsigned int qFact = 8 / bits;
     constexpr unsigned int pMax = (1 << bits) - 1;
 
@@ -330,7 +330,7 @@ Tensor matmul_quant_cuda(Tensor a, Tensor b, unsigned int bits, float scale, flo
     }
 }
 
-Tensor quantize_and_pack_cuda(Tensor a, unsigned int bits, float scale, float zero_point) {
+Tensor quantize_cuda(Tensor a, unsigned int bits, float scale, float zero_point) {
     at::ScalarType typea = a.scalar_type();
     at::IntArrayRef sizesa = a.sizes();
     at::IntArrayRef stridesa = a.strides();
@@ -356,19 +356,19 @@ Tensor quantize_and_pack_cuda(Tensor a, unsigned int bits, float scale, float ze
 
             switch (bits) {
                 case 8: {
-                    quantize_and_pack_float<8><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, tan, tak, scale, zero_point);
+                    quantize_float_kernel<8><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, tan, tak, scale, zero_point);
                     break;
                 }
                 case 4: {
-                    quantize_and_pack_float<4><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, tan, tak, scale, zero_point);
+                    quantize_float_kernel<4><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, tan, tak, scale, zero_point);
                     break;
                 }
                 case 2: {
-                    quantize_and_pack_float<2><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, tan, tak, scale, zero_point);
+                    quantize_float_kernel<2><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, tan, tak, scale, zero_point);
                     break;
                 }
                 case 1: {
-                    quantize_and_pack_float<1><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, tan, tak, scale, zero_point);
+                    quantize_float_kernel<1><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, tan, tak, scale, zero_point);
                     break;
                 }
                 default: {
@@ -383,19 +383,19 @@ Tensor quantize_and_pack_cuda(Tensor a, unsigned int bits, float scale, float ze
 
             switch (bits) {
                 case 8: {
-                    quantize_and_pack_half<8><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, tan, tak, scale, zero_point);
+                    quantize_half_kernel<8><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, tan, tak, scale, zero_point);
                     break;
                 }
                 case 4: {
-                    quantize_and_pack_half<4><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, tan, tak, scale, zero_point);
+                    quantize_half_kernel<4><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, tan, tak, scale, zero_point);
                     break;
                 }
                 case 2: {
-                    quantize_and_pack_half<2><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, tan, tak, scale, zero_point);
+                    quantize_half_kernel<2><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, tan, tak, scale, zero_point);
                     break;
                 }
                 case 1: {
-                    quantize_and_pack_half<1><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, tan, tak, scale, zero_point);
+                    quantize_half_kernel<1><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, tan, tak, scale, zero_point);
                     break;
                 }
                 default: {
@@ -414,7 +414,7 @@ Tensor quantize_and_pack_cuda(Tensor a, unsigned int bits, float scale, float ze
 }
 
 // this assumes normal strides since `a` is packed anyway
-Tensor dequantize_and_unpack_cuda(Tensor a, at::ScalarType typeb, unsigned int bits, float scale, float zero_point) {
+Tensor dequantize_cuda(Tensor a, at::ScalarType typeb, unsigned int bits, float scale, float zero_point) {
     at::ScalarType typea = a.scalar_type();
     at::IntArrayRef sizesa = a.sizes();
     assert(typea == torch::kUInt8);
@@ -435,19 +435,19 @@ Tensor dequantize_and_unpack_cuda(Tensor a, at::ScalarType typeb, unsigned int b
 
             switch (bits) {
                 case 8: {
-                    dequantize_and_unpack_float<8><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, scale, zero_point);
+                    dequantize_float_kernel<8><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, scale, zero_point);
                     break;
                 }
                 case 4: {
-                    dequantize_and_unpack_float<4><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, scale, zero_point);
+                    dequantize_float_kernel<4><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, scale, zero_point);
                     break;
                 }
                 case 2: {
-                    dequantize_and_unpack_float<2><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, scale, zero_point);
+                    dequantize_float_kernel<2><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, scale, zero_point);
                     break;
                 }
                 case 1: {
-                    dequantize_and_unpack_float<1><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, scale, zero_point);
+                    dequantize_float_kernel<1><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, scale, zero_point);
                     break;
                 }
                 default: {
@@ -462,19 +462,19 @@ Tensor dequantize_and_unpack_cuda(Tensor a, at::ScalarType typeb, unsigned int b
 
             switch (bits) {
                 case 8: {
-                    dequantize_and_unpack_half<8><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, scale, zero_point);
+                    dequantize_half_kernel<8><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, scale, zero_point);
                     break;
                 }
                 case 4: {
-                    dequantize_and_unpack_half<4><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, scale, zero_point);
+                    dequantize_half_kernel<4><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, scale, zero_point);
                     break;
                 }
                 case 2: {
-                    dequantize_and_unpack_half<2><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, scale, zero_point);
+                    dequantize_half_kernel<2><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, scale, zero_point);
                     break;
                 }
                 case 1: {
-                    dequantize_and_unpack_half<1><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, scale, zero_point);
+                    dequantize_half_kernel<1><<<blocks, threads>>>(a_ptr, b_ptr, sn, sk, scale, zero_point);
                     break;
                 }
                 default: {

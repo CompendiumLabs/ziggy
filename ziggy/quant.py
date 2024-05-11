@@ -11,10 +11,11 @@ from .utils import resize_alloc, MissingModule
 ##
 
 try:
-    import matmul_quant
+    # import matmul_quant as mq
+    import extension.matmul_triton as mq
 except ImportError:
-    matmul_quant = MissingModule(
-        'You need to compile the "matmul_quant" extension for quantization support.'
+    mq = MissingModule(
+        'Failed to import matmul_triton',
     )
 
 ##
@@ -107,7 +108,7 @@ class QuantSpec:
 
     def quantize(self, vec):
         if self.is_quantized:
-            return matmul_quant.quantize_and_pack(
+            return mq.quantize(
                 vec, self.bits, self.scale, self.zero_point
             )
         else:
@@ -121,17 +122,22 @@ class QuantSpec:
             raise ValueError(f'Unsupported dtype: {dtype}')
 
         if self.is_quantized:
-            dtype_str = 'half' if dtype == torch.half else 'float'
-            return matmul_quant.dequantize_and_unpack(
-                vec, dtype_str, self.bits, self.scale, self.zero_point
+            return mq.dequantize(
+                vec, dtype, self.bits, self.scale, self.zero_point
             )
         else:
             return vec.to(dtype=dtype)
 
-    def matmul(self, a, b):
+    def matmul(self, a, b, dtype=None):
+        # determine output dtype
+        if dtype == None:
+            dtype = torch.half if b.device == 'cuda' else torch.float
+        if dtype not in (torch.half, torch.float):
+            raise ValueError(f'Unsupported dtype: {dtype}')
+
         if self.is_quantized:
-            return matmul_quant.matmul_quant(
-                a, b, self.bits, self.scale, self.zero_point
+            return mq.matmul(
+                a, b.to(dtype), dtype, self.bits, self.scale, self.zero_point
             )
         else:
             return a @ b.to(dtype=self.dtype)

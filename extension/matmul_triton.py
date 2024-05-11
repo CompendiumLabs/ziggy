@@ -32,10 +32,13 @@ def quantize_kernel(
     BLOCK_SIZE_K: tl.constexpr,
     BLOCK_SIZE_K1: tl.constexpr,
 ):
+    # data type
+    dtype = X.dtype.element_ty
+
     # quantization params
     QFACT = 8 // BITS
     QMASK = (1 << BITS) - 1
-    QMASK_TY = tl.full((), QMASK, dtype=tl.uint8)
+    QMASK_FLT = tl.full((), QMASK, dtype=dtype)
 
     # load block data
     pid_n = tl.program_id(0)
@@ -46,7 +49,6 @@ def quantize_kernel(
     rk = pid_k * BLOCK_SIZE_K + QFACT * tl.arange(0, BLOCK_SIZE_K1)
 
     # get first data pointer
-    mask = (rn[:, None] < N) & (rk[None, :] < K)
     X1 = X + (rn[:, None] * K + rk[None, :])
 
     # create output tensor
@@ -56,9 +58,9 @@ def quantize_kernel(
     for q in range(0, 8, BITS):
         q_ty = tl.full((), q, dtype=tl.uint8)
         x = tl.load(X1)
-        xf = tl.clamp(x / scale + zero_point, 0.0, 255.0)
+        xf = tl.clamp(x / scale + zero_point, 0.0, QMASK_FLT)
         xi = (xf + 0.5).to(tl.uint8) # round to nearest
-        out |= (xi & QMASK_TY) << q_ty
+        out |= xi << q_ty
         X1 += 1
 
     # store quantized data
@@ -86,7 +88,7 @@ def dequantize_kernel(
     # quantization params
     QFACT = 8 // BITS
     QMASK = (1 << BITS) - 1
-    QMASK_TY = tl.full((), QMASK, dtype=tl.uint8)
+    QMASK_INT = tl.full((), QMASK, dtype=tl.uint8)
 
     # output params
     dtype = Y.dtype.element_ty
@@ -114,7 +116,7 @@ def dequantize_kernel(
     for q in range(0, 8, BITS):
         # unpack quantized data
         q_ty = tl.full((), q, dtype=tl.uint8)
-        xi = (x >> q_ty) & QMASK_TY
+        xi = (x >> q_ty) & QMASK_INT
         xf = xi.to(dtype)
         out = scale_ty * (xf - zero_point_ty)
 
@@ -128,7 +130,7 @@ def dequantize_kernel(
 ## matmul
 ##
 
-# requires K divisible by BLOCK_SIZE_K
+# requires K1 divisible by BLOCK_SIZE_K
 @triton.jit
 def matmul_kernel(
     A, B, C, N, M, K,
@@ -175,7 +177,7 @@ def matmul_kernel(
 
 @triton.jit
 def matmul_quant_kernel(
-    A, B, C, N, M, K,
+    A, B, C, N, M, K, K1,
     stride_an, stride_ak,
     stride_bk, stride_bm,
     stride_cn, stride_cm,
@@ -186,54 +188,62 @@ def matmul_quant_kernel(
     BLOCK_SIZE_K: tl.constexpr,
 ):
     # quantization parameters
+    QFACT = 8 // BITS
     QMASK = (1 << BITS) - 1
+    QMASK_INT = tl.full((), QMASK, dtype=tl.uint8)
 
     # data type
     dtype = C.dtype.element_ty
     zero_point_ty = tl.full((), zero_point, dtype=dtype)
+    scale_ty = tl.full((), scale, dtype=dtype)
 
     # load program ids
     pid_n = tl.program_id(0)
     pid_m = tl.program_id(1)
 
-    # get row indices for each axis (with wrap around)
-    rn = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % N
-    rm = (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)) % M
+    # get indices for each axis
+    rn0 = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+    rm0 = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+    mask = (rn0[:, None] < N) & (rm0[None, :] < M)
+
+    # get indices with wrap around
+    rn, rm = rn0 % N, rm0 % M
     rk = tl.arange(0, BLOCK_SIZE_K)
 
     # the memory addresses of first block elemenets
     A1 = A + (rn[:, None] * stride_an + rk[None, :] * stride_ak)
     B1 = B + (rk[:, None] * stride_bk + rm[None, :] * stride_bm)
 
-    # initialize and iteratively update accumulator
+    # allocate accumulator
     acc = tl.zeros((BLOCK_SIZE_N, BLOCK_SIZE_M), dtype=dtype)
-    for k in range(0, K, BLOCK_SIZE_K):
-        aq = tl.load(A1)
-        bq = tl.load(B1)
+
+    # iteratively update accumulator
+    for k in range(0, K1, BLOCK_SIZE_K):
+        aq = tl.load(A1, mask=mask)
 
         for q in range(0, 8, BITS):
-            # unpack
-            ai = (aq >> q) & QMASK
-            bi = (bq >> q) & QMASK
+            b = tl.load(B1, mask=mask)
 
-            # offset
+            # unpack a values
+            q_ty = tl.full((), q, dtype=tl.uint8)
+            ai = (aq >> q_ty) & QMASK_INT
             a = ai.to(dtype) - zero_point_ty
-            b = bi.to(dtype) - zero_point_ty
 
             # do the actual matmul
             acc += tl.dot(a, b, out_dtype=dtype)
+
+            # increment B by BLOCK_SIZE_K
+            B1 += BLOCK_SIZE_K * stride_bk
     
-        # increment pointers of A and B
+        # increment A by BLOCK_SIZE_K
         A1 += BLOCK_SIZE_K * stride_ak
-        B1 += BLOCK_SIZE_K * stride_bk
 
     # scale output
-    acc *= scale
+    acc *= scale_ty
 
     # write back result
-    C = C + (rn[:, None] * stride_cn + rm[None, :] * stride_cm)
-    mask = (rn[:, None] < N) & (rm[None, :] < M)
-    tl.store(C, acc, mask=mask)
+    C1 = C + (rn[:, None] * stride_cn + rm[None, :] * stride_cm)
+    tl.store(C1, acc, mask=mask)
 
 ##
 ## interfaces
@@ -249,20 +259,29 @@ def quantize(x, bits, scale, zero_point):
     K1 = K // QFACT
     BLOCK_SIZE_K1 = BLOCK_SIZE_K // QFACT
 
+    assert(x.is_contiguous())
+    assert(K % BLOCK_SIZE_K == 0)
+    assert(BLOCK_SIZE_K % QFACT == 0)
+
     # output shape
     y = torch.empty((N, K1), device=device, dtype=torch.uint8)
 
     # call kernel
     grid = ceil_div(N, BLOCK_SIZE_N), ceil_div(K, BLOCK_SIZE_K)
     quantize_kernel[grid](
-        x, y, N, K, K1, scale, zero_point, BITS=bits,
-        BLOCK_SIZE_N=BLOCK_SIZE_N, BLOCK_SIZE_K=BLOCK_SIZE_K, BLOCK_SIZE_K1=BLOCK_SIZE_K1
+        x, y, N, K, K1,
+        scale, zero_point, BITS=bits,
+        BLOCK_SIZE_N=BLOCK_SIZE_N,
+        BLOCK_SIZE_K=BLOCK_SIZE_K,
+        BLOCK_SIZE_K1=BLOCK_SIZE_K1,
     )
 
     # return result
     return y
 
-def dequantize(x, bits, scale, zero_point, dtype=torch.float16):
+def dequantize(x, dtype, bits, scale, zero_point):
+    assert(x.is_contiguous())
+
     # tensor information
     device = x.device
     N, K1 = x.shape
@@ -272,58 +291,74 @@ def dequantize(x, bits, scale, zero_point, dtype=torch.float16):
     K = QFACT * K1
     BLOCK_SIZE_K1 = BLOCK_SIZE_K // QFACT
 
+    assert(x.is_contiguous())
+    assert(K % BLOCK_SIZE_K == 0)
+    assert(BLOCK_SIZE_K % QFACT == 0)
+
     # output shape
     y = torch.empty((N, K), device=device, dtype=dtype)
 
     # call kernel
     grid = ceil_div(N, BLOCK_SIZE_N), ceil_div(K, BLOCK_SIZE_K)
     dequantize_kernel[grid](
-        x, y, N, K, K1, scale, zero_point, BITS=bits,
-        BLOCK_SIZE_N=BLOCK_SIZE_N, BLOCK_SIZE_K=BLOCK_SIZE_K, BLOCK_SIZE_K1=BLOCK_SIZE_K1
+        x, y, N, K, K1,
+        scale, zero_point, BITS=bits,
+        BLOCK_SIZE_N=BLOCK_SIZE_N,
+        BLOCK_SIZE_K=BLOCK_SIZE_K,
+        BLOCK_SIZE_K1=BLOCK_SIZE_K1,
     )
 
     # return result
     return y
 
-def matmul(a, b, bits=None, scale=None, zero_point=None, dtype=torch.float16):
+def matmul(a, b, dtype=None, bits=None, scale=None, zero_point=None):
     # device information
     assert(a.device == b.device)
     device = a.device
 
+    # shape information
+    N, Ka = a.size()
+    Kb, M = b.size()
+
     # dtype information
     if bits is not None:
+        QFACT = 8 // bits
+        assert(Kb == Ka * QFACT)
         assert(bits in [1, 2, 4, 8])
         assert(a.dtype == torch.uint8)
-        assert(b.dtype == torch.uint8)
         assert(scale is not None)
         assert(zero_point is not None)
+        K1, K = Ka, Kb
+    else:
+        assert(Ka == Kb)
+        K = Ka
 
-    # shape information
-    N, K1 = a.size()
-    K2, M = b.size()
-    assert(K1 == K2)
-    K = K1
+    # output allocate
+    c = torch.zeros((N, M), device=device, dtype=dtype)
 
     # stride information
     san, sak = a.stride()
     sbk, sbm = b.stride()
-
-    # output shape
-    c = torch.zeros((N, M), device=device, dtype=dtype)
     scn, scm = c.stride()
 
     # call kernel
     grid = ceil_div(N, BLOCK_SIZE_N), ceil_div(M, BLOCK_SIZE_M)
     if bits is None:
         matmul_kernel[grid](
-            a, b, c, N, M, K, san, sak, sbk, sbm, scn, scm,
-            BLOCK_SIZE_N=BLOCK_SIZE_N, BLOCK_SIZE_M=BLOCK_SIZE_M, BLOCK_SIZE_K=BLOCK_SIZE_K
+            a, b, c, N, M, K,
+            san, sak, sbk, sbm, scn, scm,
+            BLOCK_SIZE_N=BLOCK_SIZE_N,
+            BLOCK_SIZE_M=BLOCK_SIZE_M,
+            BLOCK_SIZE_K=BLOCK_SIZE_K,
         )
     else:
         matmul_quant_kernel[grid](
-            a, b, c, N, M, K, san, sak, sbk, sbm, scn, scm,
+            a, b, c, N, M, K, K1,
+            san, sak, sbk, sbm, scn, scm,
             scale=scale, zero_point=zero_point, BITS=bits,
-            BLOCK_SIZE_N=BLOCK_SIZE_N, BLOCK_SIZE_M=BLOCK_SIZE_M, BLOCK_SIZE_K=BLOCK_SIZE_K
+            BLOCK_SIZE_N=BLOCK_SIZE_N,
+            BLOCK_SIZE_M=BLOCK_SIZE_M,
+            BLOCK_SIZE_K=BLOCK_SIZE_K,
         )
 
     # return result

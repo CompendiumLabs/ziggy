@@ -64,7 +64,7 @@ inline float dot_quant_float_cpu(uint8_t* a, float* b, int64_t sk, int64_t tbk, 
 }
 
 template <unsigned int bits>
-inline void quant_pack_float_cpu(float* a, uint8_t* b, int64_t sk, int64_t tak, float scale, float zero_point) {
+inline void quantize_float_cpu(float* a, uint8_t* b, int64_t sk, int64_t tak, float scale, float zero_point) {
     constexpr int qFact = 8 / bits;
     constexpr int pMax = (1 << bits) - 1;
 
@@ -96,7 +96,7 @@ inline void quant_pack_float_cpu(float* a, uint8_t* b, int64_t sk, int64_t tak, 
 }
 
 template <unsigned int bits>
-inline void dequant_unpack_float_cpu(uint8_t* a, float* b, int64_t sk, float scale, float zero_point) {
+inline void dequantize_float_cpu(uint8_t* a, float* b, int64_t sk, float scale, float zero_point) {
     constexpr int qFact = 8 / bits;
 
     const int64_t sk_p = sk / qFact;
@@ -194,7 +194,7 @@ Tensor matmul_quant_cpu(Tensor a, Tensor b, unsigned int bits, float scale, floa
     return c;
 }
 
-Tensor quantize_and_pack_cpu(Tensor a, unsigned int bits, float scale, float zero_point) {
+Tensor quantize_cpu(Tensor a, unsigned int bits, float scale, float zero_point) {
     at::ScalarType typea = a.scalar_type();
     at::IntArrayRef sizesa = a.sizes();
     at::IntArrayRef stridesa = a.strides();
@@ -220,19 +220,19 @@ Tensor quantize_and_pack_cpu(Tensor a, unsigned int bits, float scale, float zer
 
             switch (bits) {
                 case 8: {
-                    quant_pack_float_cpu<8>(posa, posb, sk, tak, scale, zero_point);
+                    quantize_float_cpu<8>(posa, posb, sk, tak, scale, zero_point);
                     break;
                 }
                 case 4: {
-                    quant_pack_float_cpu<4>(posa, posb, sk, tak, scale, zero_point);
+                    quantize_float_cpu<4>(posa, posb, sk, tak, scale, zero_point);
                     break;
                 }
                 case 2: {
-                    quant_pack_float_cpu<2>(posa, posb, sk, tak, scale, zero_point);
+                    quantize_float_cpu<2>(posa, posb, sk, tak, scale, zero_point);
                     break;
                 }
                 case 1: {
-                    quant_pack_float_cpu<1>(posa, posb, sk, tak, scale, zero_point);
+                    quantize_float_cpu<1>(posa, posb, sk, tak, scale, zero_point);
                     break;
                 }
                 default: {
@@ -246,7 +246,7 @@ Tensor quantize_and_pack_cpu(Tensor a, unsigned int bits, float scale, float zer
 }
 
 // this assumes normal strides since `a` is packed anyway
-Tensor dequantize_and_unpack_cpu(Tensor a, at::ScalarType typeb, unsigned int bits, float scale, float zero_point) {
+Tensor dequantize_cpu(Tensor a, at::ScalarType typeb, unsigned int bits, float scale, float zero_point) {
     at::ScalarType typea = a.scalar_type();
     at::IntArrayRef sizesa = a.sizes();
     at::IntArrayRef stridesa = a.strides();
@@ -272,19 +272,19 @@ Tensor dequantize_and_unpack_cpu(Tensor a, at::ScalarType typeb, unsigned int bi
 
             switch (bits) {
                 case 8: {
-                    dequant_unpack_float_cpu<8>(posa, posb, sk, scale, zero_point);
+                    dequantize_float_cpu<8>(posa, posb, sk, scale, zero_point);
                     break;
                 }
                 case 4: {
-                    dequant_unpack_float_cpu<4>(posa, posb, sk, scale, zero_point);
+                    dequantize_float_cpu<4>(posa, posb, sk, scale, zero_point);
                     break;
                 }
                 case 2: {
-                    dequant_unpack_float_cpu<2>(posa, posb, sk, scale, zero_point);
+                    dequantize_float_cpu<2>(posa, posb, sk, scale, zero_point);
                     break;
                 }
                 case 1: {
-                    dequant_unpack_float_cpu<1>(posa, posb, sk, scale, zero_point);
+                    dequantize_float_cpu<1>(posa, posb, sk, scale, zero_point);
                     break;
                 }
                 default: {

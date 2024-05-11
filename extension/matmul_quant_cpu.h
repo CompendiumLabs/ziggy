@@ -5,5 +5,5 @@
 using namespace torch;
 
 Tensor matmul_quant_cpu(Tensor a, Tensor b, unsigned int bits, float scale, float zero_point);
-Tensor quantize_and_pack_cpu(Tensor a, unsigned int bits, float scale, float zero_point);
-Tensor dequantize_and_unpack_cpu(Tensor a, at::ScalarType typeb, unsigned int bits, float scale, float zero_point);
+Tensor quantize_cpu(Tensor a, unsigned int bits, float scale, float zero_point);
+Tensor dequantize_cpu(Tensor a, at::ScalarType typeb, unsigned int bits, float scale, float zero_point);

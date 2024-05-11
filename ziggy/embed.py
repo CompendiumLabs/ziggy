@@ -324,7 +324,7 @@ def pack_batches(sizes, max_len):
 
 class LlamaCppEmbedding:
     def __init__(self, model_path, max_len=512, pooling_type=None, device='cuda', verbose=False, **kwargs):
-        from llama_cpp import Llama, llama_get_pooling_type
+        from llama_cpp import Llama, llama_pooling_type, LLAMA_POOLING_TYPE_UNSPECIFIED
 
         # set up device
         ngl = 0 if device == 'cpu' else 99
@@ -342,7 +342,7 @@ class LlamaCppEmbedding:
         # get metadata
         self.name = os.path.basename(model_path)
         self.max_len = max_len
-        self.pooling_type = llama_get_pooling_type(self.model._ctx)
+        self.pooling_type = llama_pooling_type(self.model._ctx.ctx)
         self.dims = self.model.n_embd()
 
     def tokenize(self, text, special=False):

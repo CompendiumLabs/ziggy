@@ -28,6 +28,7 @@ def quantize_kernel(
     X, Y, N, K, K1,
     scale, zero_point,
     BITS: tl.constexpr,
+    QFACT: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
     BLOCK_SIZE_K1: tl.constexpr,
@@ -36,7 +37,6 @@ def quantize_kernel(
     dtype = X.dtype.element_ty
 
     # quantization params
-    QFACT = 8 // BITS
     QMASK = (1 << BITS) - 1
     QMASK_FLT = tl.full((), QMASK, dtype=dtype)
 
@@ -44,30 +44,38 @@ def quantize_kernel(
     pid_n = tl.program_id(0)
     pid_k = tl.program_id(1)
 
+    # deswizzle k block indices
+    bk  = tl.arange(0, BLOCK_SIZE_K )
+    bk1 = tl.arange(0, BLOCK_SIZE_K1)
+    x_shift = BITS * (bk % QFACT)
+
     # get row indices for each axis
-    rn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
-    rk = pid_k * BLOCK_SIZE_K + QFACT * tl.arange(0, BLOCK_SIZE_K1)
+    rn  = pid_n * BLOCK_SIZE_N  + tl.arange(0, BLOCK_SIZE_N)
+    rk  = pid_k * BLOCK_SIZE_K  + bk
+    rk1 = pid_k * BLOCK_SIZE_K1 + bk1
+
+    # load quantized data
+    mask_x = rn[:, None] < N
+    mask_y = rn[:, None] < N
 
     # get first data pointer
-    X1 = X + (rn[:, None] * K + rk[None, :])
+    X1 = X + (rn[:, None] * K  + rk [None, :])
+    Y1 = Y + (rn[:, None] * K1 + rk1[None, :])
 
-    # create output tensor
-    out = tl.zeros((BLOCK_SIZE_N, BLOCK_SIZE_K1), dtype=tl.uint8)
+    # load data
+    x = tl.load(X1, mask=mask_x)
 
     # quantize data
-    for q in range(0, 8, BITS):
-        q_ty = tl.full((), q, dtype=tl.uint8)
-        x = tl.load(X1)
-        xf = tl.clamp(x / scale + zero_point, 0.0, QMASK_FLT)
-        xi = (xf + 0.5).to(tl.uint8) # round to nearest
-        out |= xi << q_ty
-        X1 += 1
+    xf = tl.clamp(x / scale + zero_point, 0.0, QMASK_FLT)
+    xi = (xf + 0.5).to(tl.uint8) # round to nearest
+    xq = xi << x_shift
+
+    # compress quantized data
+    mat = tl.reshape(xq, (BLOCK_SIZE_N, BLOCK_SIZE_K1, QFACT))
+    out = tl.sum(mat, axis=2)
 
     # store quantized data
-    rk1 = pid_k * BLOCK_SIZE_K1 + tl.arange(0, BLOCK_SIZE_K1)
-    mask1 = (rn[:, None] < N) & (rk1[None, :] < K1)
-    Y = Y + (rn[:, None] * K1 + rk1[None, :])
-    tl.store(Y, out, mask=mask1)
+    tl.store(Y1, out, mask=mask_y)
 
 ##
 ## dequantize
@@ -110,8 +118,8 @@ def dequantize_kernel(
     rk1 = pid_k * BLOCK_SIZE_K1 + bk1
 
     # load quantized data
-    mask_x = (rn[:, None] < N) & (rk1[None, :] < K1)
-    mask_y = (rn[:, None] < N) & (rk [None, :] < K )
+    mask_x = rn[:, None] < N
+    mask_y = rn[:, None] < N
 
     # get data pointers
     X1 = X + (rn[:, None] * K1 + rk1[None, :])
@@ -280,7 +288,8 @@ def quantize(x, bits, scale, zero_point):
     grid = ceil_div(N, BLOCK_SIZE_N), ceil_div(K, BLOCK_SIZE_K)
     quantize_kernel[grid](
         x, y, N, K, K1,
-        scale, zero_point, BITS=bits,
+        scale, zero_point,
+        BITS=bits, QFACT=QFACT,
         BLOCK_SIZE_N=BLOCK_SIZE_N,
         BLOCK_SIZE_K=BLOCK_SIZE_K,
         BLOCK_SIZE_K1=BLOCK_SIZE_K1,

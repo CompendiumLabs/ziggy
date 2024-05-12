@@ -99,32 +99,33 @@ def dequantize_kernel(
     pid_n = tl.program_id(0)
     pid_k = tl.program_id(1)
 
+    # get k block indices
+    bk = tl.arange(0, BLOCK_SIZE_K)
+    bk1, bq1 = bk // QFACT, bk % QFACT
+    x_shift = BITS * bq1
+
     # get row indices for each axis
-    rn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
-    rk1 = pid_k * BLOCK_SIZE_K1 + tl.arange(0, BLOCK_SIZE_K1)
-    rk = pid_k * BLOCK_SIZE_K + QFACT * tl.arange(0, BLOCK_SIZE_K1)
+    rn  = pid_n * BLOCK_SIZE_N  + tl.arange(0, BLOCK_SIZE_N)
+    rk  = pid_k * BLOCK_SIZE_K  + bk
+    rk1 = pid_k * BLOCK_SIZE_K1 + bk1
 
     # load quantized data
-    mask1 = (rn[:, None] < N) & (rk1[None, :] < K1)
+    mask_x = (rn[:, None] < N) & (rk1[None, :] < K1)
+    mask_y = (rn[:, None] < N) & (rk [None, :] < K )
+
+    # get data pointers
     X1 = X + (rn[:, None] * K1 + rk1[None, :])
-    x = tl.load(X1, mask=mask1)
+    Y1 = Y + (rn[:, None] * K  + rk [None, :])
 
-    # create output tensor
-    out = tl.zeros((BLOCK_SIZE_N, BLOCK_SIZE_K1), dtype=dtype)
+    # load data
+    x = tl.load(X1, mask=mask_x)
 
-    # quantize data
-    for q in range(0, 8, BITS):
-        # unpack quantized data
-        q_ty = tl.full((), q, dtype=tl.uint8)
-        xi = (x >> q_ty) & QMASK_INT
-        xf = xi.to(dtype)
-        out = scale_ty * (xf - zero_point_ty)
+    # unpack quantized data
+    xi = (x >> x_shift) & QMASK_INT
+    xf = scale_ty * (xi.to(dtype) - zero_point_ty)
 
-        # store dequantized data
-        mask = (rn[:, None] < N) & (rk[None, :] < K)
-        Y1 = Y + (rn[:, None] * K + rk[None, :])
-        tl.store(Y1, out, mask=mask)
-        rk += 1
+    # store dequantized data
+    tl.store(Y1, xf, mask=mask_y)
 
 ##
 ## matmul

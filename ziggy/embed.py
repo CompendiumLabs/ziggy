@@ -155,7 +155,9 @@ class HuggingfaceEmbedding:
             if dtype is None:
                 dtype = torch.float16 if device == 'cuda' else torch.float32
             self.tokenizer = AutoTokenizer.from_pretrained(model_id)
-            self.model = AutoModel.from_pretrained(model_id, device_map=device_map, torch_dtype=dtype)
+            self.model = AutoModel.from_pretrained(
+                model_id, device_map=device_map, torch_dtype=dtype, trust_remote_code=trust_remote_code
+            )
 
         # get pooling type
         if pooling_type is None:

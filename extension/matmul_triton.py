@@ -130,7 +130,7 @@ def dequantize_kernel(
 ## matmul
 ##
 
-# requires K1 divisible by BLOCK_SIZE_K
+# requires K divisible by BLOCK_SIZE_K
 @triton.jit
 def matmul_kernel(
     A, B, C, N, M, K,
@@ -175,6 +175,8 @@ def matmul_kernel(
     mask = (rn[:, None] < N) & (rm[None, :] < M)
     tl.store(C, acc, mask=mask)
 
+# requires K divisible by BLOCK_SIZE_K
+# requires BLOCK_SIZE_K divisble by QFACT
 @triton.jit
 def matmul_quant_kernel(
     A, B, C, N, M, K, K1,
@@ -186,6 +188,7 @@ def matmul_quant_kernel(
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
+    BLOCK_SIZE_K1: tl.constexpr,
 ):
     # quantization parameters
     QFACT = 8 // BITS
@@ -204,45 +207,42 @@ def matmul_quant_kernel(
     # get indices for each axis
     rn0 = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
     rm0 = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
-    mask = (rn0[:, None] < N) & (rm0[None, :] < M)
-
-    # get indices with wrap around
     rn, rm = rn0 % N, rm0 % M
+
+    # deswizzle k between index and shifter
     rk = tl.arange(0, BLOCK_SIZE_K)
+    rk1 = rk // QFACT
+    rq1 = BITS * (rk % QFACT)
 
     # the memory addresses of first block elemenets
-    A1 = A + (rn[:, None] * stride_an + rk[None, :] * stride_ak)
-    B1 = B + (rk[:, None] * stride_bk + rm[None, :] * stride_bm)
+    A1 = A + (rn[:, None] * stride_an + rk1[None, :] * stride_ak)
+    B1 = B + (rk[:, None] * stride_bk + rm [None, :] * stride_bm)
 
     # allocate accumulator
     acc = tl.zeros((BLOCK_SIZE_N, BLOCK_SIZE_M), dtype=dtype)
 
     # iteratively update accumulator
-    for k in range(0, K1, BLOCK_SIZE_K):
-        aq = tl.load(A1, mask=mask)
+    for k in range(0, K, BLOCK_SIZE_K):
+        aq = tl.load(A1)
+        b = tl.load(B1)
 
-        for q in range(0, 8, BITS):
-            b = tl.load(B1, mask=mask)
+        # unpack a values
+        ai = (aq >> rq1) & QMASK_INT
+        a = ai.to(dtype) - zero_point_ty
 
-            # unpack a values
-            q_ty = tl.full((), q, dtype=tl.uint8)
-            ai = (aq >> q_ty) & QMASK_INT
-            a = ai.to(dtype) - zero_point_ty
-
-            # do the actual matmul
-            acc += tl.dot(a, b, out_dtype=dtype)
-
-            # increment B by BLOCK_SIZE_K
-            B1 += BLOCK_SIZE_K * stride_bk
+        # do the actual matmul
+        acc += tl.dot(a, b, out_dtype=dtype)
     
         # increment A by BLOCK_SIZE_K
-        A1 += BLOCK_SIZE_K * stride_ak
+        A1 += BLOCK_SIZE_K1 * stride_ak
+        B1 += BLOCK_SIZE_K  * stride_bk
 
     # scale output
     acc *= scale_ty
 
     # write back result
     C1 = C + (rn[:, None] * stride_cn + rm[None, :] * stride_cm)
+    mask = (rn0[:, None] < N) & (rm0[None, :] < M)
     tl.store(C1, acc, mask=mask)
 
 ##
@@ -316,6 +316,10 @@ def matmul(a, b, dtype=None, bits=None, scale=None, zero_point=None):
     assert(a.device == b.device)
     device = a.device
 
+    # detect dtype
+    if dtype is None:
+        dtype = b.dtype
+
     # shape information
     N, Ka = a.size()
     Kb, M = b.size()
@@ -323,6 +327,7 @@ def matmul(a, b, dtype=None, bits=None, scale=None, zero_point=None):
     # dtype information
     if bits is not None:
         QFACT = 8 // bits
+        BLOCK_SIZE_K1 = BLOCK_SIZE_K // QFACT
         assert(Kb == Ka * QFACT)
         assert(bits in [1, 2, 4, 8])
         assert(a.dtype == torch.uint8)
@@ -359,6 +364,7 @@ def matmul(a, b, dtype=None, bits=None, scale=None, zero_point=None):
             BLOCK_SIZE_N=BLOCK_SIZE_N,
             BLOCK_SIZE_M=BLOCK_SIZE_M,
             BLOCK_SIZE_K=BLOCK_SIZE_K,
+            BLOCK_SIZE_K1=BLOCK_SIZE_K1,
         )
 
     # return result

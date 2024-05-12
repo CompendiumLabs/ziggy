@@ -149,19 +149,27 @@ def matmul_kernel(
     pid_m = tl.program_id(1)
 
     # get row indices for each axis
-    rn = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % N
-    rm = (pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)) % M
+    rn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+    rm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
     rk = tl.arange(0, BLOCK_SIZE_K)
+
+    # create read/write masks
+    mask_a = rn[:, None] < N
+    mask_b = rm[None, :] < M
+    mask_c = (rn[:, None] < N) & (rm[None, :] < M)
 
     # the memory addresses of first block elemenets
     A1 = A + (rn[:, None] * stride_an + rk[None, :] * stride_ak)
     B1 = B + (rk[:, None] * stride_bk + rm[None, :] * stride_bm)
+    C1 = C + (rn[:, None] * stride_cn + rm[None, :] * stride_cm)
+
+    # allocate accumulator
+    acc = tl.zeros((BLOCK_SIZE_N, BLOCK_SIZE_M), dtype=dtype)
 
     # initialize and iteratively update accumulator
-    acc = tl.zeros((BLOCK_SIZE_N, BLOCK_SIZE_M), dtype=dtype)
     for k in range(0, K, BLOCK_SIZE_K):
-        a = tl.load(A1)
-        b = tl.load(B1)
+        a = tl.load(A1, mask=mask_a)
+        b = tl.load(B1, mask=mask_b)
 
         # block level matrix multiplication
         acc += tl.dot(a, b, out_dtype=dtype)
@@ -171,9 +179,7 @@ def matmul_kernel(
         B1 += BLOCK_SIZE_K * stride_bk
 
     # write back result
-    C = C + (rn[:, None] * stride_cn + rm[None, :] * stride_cm)
-    mask = (rn[:, None] < N) & (rm[None, :] < M)
-    tl.store(C, acc, mask=mask)
+    tl.store(C1, acc, mask=mask_c)
 
 # requires K divisible by BLOCK_SIZE_K
 # requires BLOCK_SIZE_K divisble by QFACT
@@ -210,8 +216,8 @@ def matmul_quant_kernel(
 
     # deswizzle k between index and shifter
     rk = tl.arange(0, BLOCK_SIZE_K)
-    rk1 = rk // QFACT
-    rq1 = BITS * (rk % QFACT)
+    rk1, rq1 = rk // QFACT, rk % QFACT
+    a_shift = BITS * rq1
 
     # create read/write masks
     mask_a = rn[:, None] < N
@@ -232,7 +238,7 @@ def matmul_quant_kernel(
         b = tl.load(B1, mask=mask_b)
 
         # unpack a values
-        ai = (aq >> rq1) & QMASK_INT
+        ai = (aq >> a_shift) & QMASK_INT
         a = ai.to(dtype) - zero_point_ty
 
         # do the actual matmul

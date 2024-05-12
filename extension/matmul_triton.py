@@ -205,26 +205,31 @@ def matmul_quant_kernel(
     pid_m = tl.program_id(1)
 
     # get indices for each axis
-    rn0 = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
-    rm0 = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
-    rn, rm = rn0 % N, rm0 % M
+    rn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+    rm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
 
     # deswizzle k between index and shifter
     rk = tl.arange(0, BLOCK_SIZE_K)
     rk1 = rk // QFACT
     rq1 = BITS * (rk % QFACT)
 
+    # create read/write masks
+    mask_a = rn[:, None] < N
+    mask_b = rm[None, :] < M
+    mask_c = (rn[:, None] < N) & (rm[None, :] < M)
+
     # the memory addresses of first block elemenets
     A1 = A + (rn[:, None] * stride_an + rk1[None, :] * stride_ak)
     B1 = B + (rk[:, None] * stride_bk + rm [None, :] * stride_bm)
+    C1 = C + (rn[:, None] * stride_cn + rm [None, :] * stride_cm)
 
     # allocate accumulator
     acc = tl.zeros((BLOCK_SIZE_N, BLOCK_SIZE_M), dtype=dtype)
 
     # iteratively update accumulator
     for k in range(0, K, BLOCK_SIZE_K):
-        aq = tl.load(A1)
-        b = tl.load(B1)
+        aq = tl.load(A1, mask=mask_a)
+        b = tl.load(B1, mask=mask_b)
 
         # unpack a values
         ai = (aq >> rq1) & QMASK_INT
@@ -241,9 +246,7 @@ def matmul_quant_kernel(
     acc *= scale_ty
 
     # write back result
-    C1 = C + (rn[:, None] * stride_cn + rm[None, :] * stride_cm)
-    mask = (rn0[:, None] < N) & (rm0[None, :] < M)
-    tl.store(C1, acc, mask=mask)
+    tl.store(C1, acc, mask=mask_c)
 
 ##
 ## interfaces

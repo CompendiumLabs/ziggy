@@ -35,6 +35,9 @@ def quantize_kernel(
 ):
     # data type
     dtype = X.dtype.element_ty
+    scale_ty = tl.full((), scale, dtype=dtype)
+    zero_point_ty = tl.full((), zero_point, dtype=dtype)
+    half_ty = tl.full((), 0.5, dtype=dtype)
 
     # quantization params
     QMASK = (1 << BITS) - 1
@@ -66,8 +69,8 @@ def quantize_kernel(
     x = tl.load(X1, mask=mask_x)
 
     # quantize data
-    xf = tl.clamp(x / scale + zero_point, 0.0, QMASK_FLT)
-    xi = (xf + 0.5).to(tl.uint8) # round to nearest
+    xf = tl.clamp(x / scale_ty + zero_point_ty, 0.0, QMASK_FLT)
+    xi = (xf + half_ty).to(tl.uint8) # round to nearest
     xq = xi << x_shift
 
     # compress quantized data
@@ -93,15 +96,15 @@ def dequantize_kernel(
     BLOCK_SIZE_K: tl.constexpr,
     BLOCK_SIZE_K1: tl.constexpr,
 ):
-    # quantization params
-    QFACT = 8 // BITS
-    QMASK = (1 << BITS) - 1
-    QMASK_INT = tl.full((), QMASK, dtype=tl.uint8)
-
     # output params
     dtype = Y.dtype.element_ty
     scale_ty = tl.full((), scale, dtype=dtype)
     zero_point_ty = tl.full((), zero_point, dtype=dtype)
+
+    # quantization params
+    QFACT = 8 // BITS
+    QMASK = (1 << BITS) - 1
+    QMASK_INT = tl.full((), QMASK, dtype=tl.uint8)
 
     # load block data
     pid_n = tl.program_id(0)
@@ -205,15 +208,15 @@ def matmul_quant_kernel(
     BLOCK_SIZE_K: tl.constexpr,
     BLOCK_SIZE_K1: tl.constexpr,
 ):
-    # quantization parameters
-    QFACT = 8 // BITS
-    QMASK = (1 << BITS) - 1
-    QMASK_INT = tl.full((), QMASK, dtype=tl.uint8)
-
     # data type
     dtype = C.dtype.element_ty
     zero_point_ty = tl.full((), zero_point, dtype=dtype)
     scale_ty = tl.full((), scale, dtype=dtype)
+
+    # quantization parameters
+    QFACT = 8 // BITS
+    QMASK = (1 << BITS) - 1
+    QMASK_INT = tl.full((), QMASK, dtype=tl.uint8)
 
     # load program ids
     pid_n = tl.program_id(0)

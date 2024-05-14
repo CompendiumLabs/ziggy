@@ -155,7 +155,9 @@ def matmul_float(x, y, batch_size=BATCH_SIZE):
 def matmul_quant(x, y, bits, scale, zero_point, batch_size=BATCH_SIZE):
     N, Kx = x.shape
     Ky, M = y.shape
-    assert(Kx == Ky)
+
+    QFACT = 8 // bits
+    assert(QFACT * Kx == Ky)
 
     device = x.device
     dtype = y.dtype

@@ -20,30 +20,30 @@ except ImportError:
     )
 
 def quantize(x, bits, scale, zero_point):
-    if x.device == 'cuda':
+    if x.device.type == 'cuda':
         return mq_triton.quantize(x, bits, scale, zero_point)
     else:
         return mq_torch.quantize(x, bits, scale, zero_point)
 
 def dequantize(x, bits, scale, zero_point, dtype):
-    if x.device == 'cuda':
+    if x.device.type == 'cuda':
         return mq_triton.dequantize(x, bits, scale, zero_point, dtype)
     else:
         return mq_torch.dequantize(x, bits, scale, zero_point, dtype)
 
 def matmul_float(x, y):
     assert(x.device == y.device)
-    if x.device == 'cuda':
-        return mq_triton.matmul(x, y)
+    if x.device.type == 'cuda':
+        return mq_triton.matmul_float(x, y)
     else:
-        return mq_torch.matmul(x, y)
+        return mq_torch.matmul_float(x, y)
 
 def matmul_quant(x, y, bits, scale, zero_point):
     assert(x.device == y.device)
-    if x.device == 'cuda':
-        return mq_triton.matmul(x, y, bits, scale, zero_point)
+    if x.device.type == 'cuda':
+        return mq_triton.matmul_quant(x, y, bits, scale, zero_point)
     else:
-        return mq_torch.matmul(x, y, bits, scale, zero_point)
+        return mq_torch.matmul_quant(x, y, bits, scale, zero_point)
 
 ##
 ## QuantizedEmbedding
@@ -143,8 +143,8 @@ class QuantSpec:
 
     def dequantize(self, x, dtype=None):
         # determine output dtype
-        if dtype == None:
-            dtype = torch.float16 if x.device == 'cuda' else torch.float32
+        if dtype is None:
+            dtype = torch.float16 if x.device.type == 'cuda' else torch.float32
 
         if self.is_quantized:
             return dequantize(
@@ -153,14 +153,14 @@ class QuantSpec:
         else:
             return x.to(dtype=dtype)
 
-    def matmul(self, a, b):
+    def matmul(self, x, y):
         if self.is_quantized:
             return matmul_quant(
-                a, b, self.bits, self.scale, self.zero_point
+                x, y, self.bits, self.scale, self.zero_point
             )
         else:
             return matmul_float(
-                a, b, self.bits, self.scale, self.zero_point
+                x, y, self.bits, self.scale, self.zero_point
             )
 
 Half = QuantSpec(QuantType.half)

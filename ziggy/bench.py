@@ -8,6 +8,9 @@ from subprocess import run
 from glob import glob
 
 import torch
+from torch.nn.functional import normalize as norm
+
+from . import matmul as mm_torch
 
 from .embed import HuggingfaceEmbedding, LlamaCppEmbedding
 from .database import stream_jsonl, text_splitter
@@ -121,6 +124,20 @@ def profile_tokenizer(
     print(f'Size: {size_avg:.2f} ± {size_std:.2f}')
     print(f'Time: {delta:.2f} seconds')
     print(f'Speed: {speed:.2f} chunks/second')
+
+def profile_matmul_torch(N=1_048_576, K=384, bits=8):
+    # default quant params
+    grid = (1 << bits) - 1
+    scale, zero_point = 4.0/grid, 0.5*grid
+
+    x = torch.randn(N, K)
+    q = mm_torch.quantize(x, bits=bits, scale=scale, zero_point=zero_point)
+
+    start = time.time()
+    z = mm_torch.matmul_quant(q, x.T, bits=bits, scale=scale, zero_point=zero_point)
+    delta = time.time() - start
+
+    print(f'Time: {100*delta:.2f} milliseconds')
 
 def check_embed(mod_ll, mod_st, path, normalize=True, cpu=False, max_len=512, max_rows=None, trust_remote_code=False):
     from sentence_transformers import SentenceTransformer

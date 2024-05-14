@@ -14,7 +14,12 @@ BLOCK_SIZE_K = 16
 ## functions
 ##
 
-ceil_div = lambda x, y: (x + y - 1) // y
+def ceil_div(x, y):
+    return (x + y - 1) // y
+
+@triton.jit
+def clamp(x, a, b):
+    return tl.maximum(a, tl.minimum(b, x))
 
 ##
 ## quantize
@@ -69,7 +74,7 @@ def quantize_kernel(
     x = tl.load(X1, mask=mask_x)
 
     # quantize data
-    xf = tl.clamp(x / scale_ty + zero_point_ty, 0.0, QMASK_FLT)
+    xf = clamp(x / scale_ty + zero_point_ty, 0.0, QMASK_FLT)
     xi = (xf + half_ty).to(tl.uint8) # round to nearest
     xq = xi << x_shift
 
@@ -144,7 +149,7 @@ def dequantize_kernel(
 
 # requires K divisible by BLOCK_SIZE_K
 @triton.jit
-def matmul_kernel(
+def matmul_float_kernel(
     A, B, C, N, M, K,
     stride_an, stride_ak,
     stride_bk, stride_bm,
@@ -301,7 +306,7 @@ def quantize(x, bits, scale, zero_point):
     # return result
     return y
 
-def dequantize(x, dtype, bits, scale, zero_point):
+def dequantize(x, bits, scale, zero_point, dtype):
     assert(x.is_contiguous())
 
     # tensor information
@@ -333,61 +338,85 @@ def dequantize(x, dtype, bits, scale, zero_point):
     # return result
     return y
 
-def matmul(a, b, dtype=None, bits=None, scale=None, zero_point=None):
+def matmul_float(x, y, dtype=None):
     # device information
-    assert(a.device == b.device)
-    device = a.device
+    assert(x.device == y.device)
+    device = x.device
 
     # detect dtype
     if dtype is None:
-        dtype = b.dtype
+        dtype = y.dtype
 
     # shape information
-    N, Ka = a.size()
-    Kb, M = b.size()
-
-    # dtype information
-    if bits is not None:
-        QFACT = 8 // bits
-        BLOCK_SIZE_K1 = BLOCK_SIZE_K // QFACT
-        assert(Kb == Ka * QFACT)
-        assert(bits in [1, 2, 4, 8])
-        assert(a.dtype == torch.uint8)
-        assert(scale is not None)
-        assert(zero_point is not None)
-        K1, K = Ka, Kb
-    else:
-        assert(Ka == Kb)
-        K = Ka
+    N, Kx = x.size()
+    Ky, M = y.size()
+    assert(Kx == Ky)
+    K = Kx
 
     # output allocate
-    c = torch.zeros((N, M), device=device, dtype=dtype)
+    z = torch.zeros((N, M), device=device, dtype=dtype)
 
     # stride information
-    san, sak = a.stride()
-    sbk, sbm = b.stride()
-    scn, scm = c.stride()
+    sxn, sxk = x.stride()
+    syk, sym = y.stride()
+    szn, szm = z.stride()
 
     # call kernel
     grid = ceil_div(N, BLOCK_SIZE_N), ceil_div(M, BLOCK_SIZE_M)
-    if bits is None:
-        matmul_kernel[grid](
-            a, b, c, N, M, K,
-            san, sak, sbk, sbm, scn, scm,
-            BLOCK_SIZE_N=BLOCK_SIZE_N,
-            BLOCK_SIZE_M=BLOCK_SIZE_M,
-            BLOCK_SIZE_K=BLOCK_SIZE_K,
-        )
-    else:
-        matmul_quant_kernel[grid](
-            a, b, c, N, M, K, K1,
-            san, sak, sbk, sbm, scn, scm,
-            scale=scale, zero_point=zero_point, BITS=bits,
-            BLOCK_SIZE_N=BLOCK_SIZE_N,
-            BLOCK_SIZE_M=BLOCK_SIZE_M,
-            BLOCK_SIZE_K=BLOCK_SIZE_K,
-            BLOCK_SIZE_K1=BLOCK_SIZE_K1,
-        )
+    matmul_float_kernel[grid](
+        x, y, z, N, M, K,
+        sxn, sxk, syk, sym, szn, szm,
+        BLOCK_SIZE_N=BLOCK_SIZE_N,
+        BLOCK_SIZE_M=BLOCK_SIZE_M,
+        BLOCK_SIZE_K=BLOCK_SIZE_K,
+    )
 
     # return result
-    return c
+    return z
+
+def matmul_quant(x, y, bits, scale, zero_point, dtype=None):
+    # device information
+    assert(x.device == y.device)
+    device = x.device
+
+    # detect dtype
+    if dtype is None:
+        dtype = y.dtype
+
+    # shape information
+    N, Kx = x.size()
+    Ky, M = y.size()
+
+    # dtype information
+    QFACT = 8 // bits
+    BLOCK_SIZE_K1 = BLOCK_SIZE_K // QFACT
+    assert(Ky == Kx * QFACT)
+    assert(bits in [1, 2, 4, 8])
+    assert(x.dtype == torch.uint8)
+    assert(scale is not None)
+    assert(zero_point is not None)
+    K1, K = Kx, Ky
+
+    # output allocate
+    z = torch.zeros((N, M), device=device, dtype=dtype)
+
+    # stride information
+    sxn, sxk = x.stride()
+    syk, sym = y.stride()
+    szn, szm = z.stride()
+
+    # call kernel
+    grid = ceil_div(N, BLOCK_SIZE_N), ceil_div(M, BLOCK_SIZE_M)
+    matmul_quant_kernel[grid](
+        x, y, z, N, M, K, K1,
+        sxn, sxk, syk, sym, szn, szm,
+        scale=scale, zero_point=zero_point,
+        BITS=bits,
+        BLOCK_SIZE_N=BLOCK_SIZE_N,
+        BLOCK_SIZE_M=BLOCK_SIZE_M,
+        BLOCK_SIZE_K=BLOCK_SIZE_K,
+        BLOCK_SIZE_K1=BLOCK_SIZE_K1,
+    )
+
+    # return result
+    return z

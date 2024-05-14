@@ -50,13 +50,13 @@ int main(int argc, char ** argv) {
     Tensor b = torch::ones({m, dim}, at::device(torch::kCUDA).dtype(torch::kFloat));
 
     // quantize and pack
-    Tensor qa = quantize_and_pack_cuda(a, bits, scale, zero_point);
+    Tensor qa = quantize_cuda(a, bits, scale, zero_point);
     std::cout << "Quantized:" << std::endl;
     std::cout << qa << std::endl;
     std::cout << std::endl;
 
     // dequantize and unpack
-    Tensor a1 = dequantize_and_unpack_cuda(qa, torch::kFloat, bits, scale, zero_point);
+    Tensor a1 = dequantize_cuda(qa, torch::kFloat, bits, scale, zero_point);
     std::cout << "Dequantized:" << std::endl;
     std::cout << a1 << std::endl;
     std::cout << std::endl;

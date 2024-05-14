@@ -325,12 +325,16 @@ def pack_batches(sizes, max_len):
     return batches
 
 class LlamaCppEmbedding:
-    def __init__(self, model_path, max_len=512, pooling_type=None, device='cuda', verbose=False, **kwargs):
+    def __init__(self, model_path, max_len=512, pooling_type=None, device='cuda', dtype=None, verbose=False, **kwargs):
         from llama_cpp import Llama, llama_pooling_type, LLAMA_POOLING_TYPE_UNSPECIFIED
 
         # set up device
         ngl = 0 if device == 'cpu' else 99
         self.device = device
+
+        # set up dtype
+        dtype0 = torch.float16 if device == 'cuda' else torch.float32
+        self.dtype = dtype0 if dtype is None else dtype
 
         # get pooling type
         pooling_type = LLAMA_POOLING_TYPE_UNSPECIFIED if pooling_type is None else pooling_type
@@ -407,13 +411,13 @@ class LlamaCppEmbedding:
         batches = pack_batches(sizes, self.max_len)
 
         # allocate output tensor
-        embeds = torch.empty(len(tokens), self.dims, device=self.device, dtype=torch.float32)
+        embeds = torch.empty(len(tokens), self.dims, device=self.device, dtype=self.dtype)
 
         # compute embeddings
         for idxs in batches:
             toks = [tokens[i] for i in idxs]
             embs = self.forward_batch(toks)
-            embeds[idxs] = torch.tensor(embs, device=self.device, dtype=torch.float32)
+            embeds[idxs] = torch.tensor(embs, device=self.device, dtype=self.dtype)
 
         return embeds
 

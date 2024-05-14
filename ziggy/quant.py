@@ -11,8 +11,8 @@ from .utils import resize_alloc, MissingModule
 ##
 
 try:
-    # import matmul_quant as mq
-    import extension.matmul_triton as mq
+    import matmul_quant as mq
+    # import extension.matmul_triton as mq
 except ImportError:
     mq = MissingModule(
         'Failed to import matmul_triton',

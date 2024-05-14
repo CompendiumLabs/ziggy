@@ -10,8 +10,6 @@ from glob import glob
 import torch
 from torch.nn.functional import normalize as norm
 
-from . import matmul as mm_torch
-
 from .embed import HuggingfaceEmbedding, LlamaCppEmbedding
 from .database import stream_jsonl, text_splitter
 from .quant import Half, Float, QuantType
@@ -125,19 +123,67 @@ def profile_tokenizer(
     print(f'Time: {delta:.2f} seconds')
     print(f'Speed: {speed:.2f} chunks/second')
 
-def profile_matmul_torch(N=1_048_576, K=384, bits=8):
+def profile_matmul_torch(N=1_048_576, N1=32, K=384, bits=8, device='cpu', dtype=torch.float32):
+    from . import matmul_torch as mq
+
     # default quant params
     grid = (1 << bits) - 1
     scale, zero_point = 4.0/grid, 0.5*grid
 
-    x = torch.randn(N, K)
-    q = mm_torch.quantize(x, bits=bits, scale=scale, zero_point=zero_point)
+    x = torch.randn(N, K, device=device, dtype=dtype)
+    x1 = x[:N1].clone()
 
     start = time.time()
-    z = mm_torch.matmul_quant(q, x.T, bits=bits, scale=scale, zero_point=zero_point)
+    q = mq.quantize(x, bits=bits, scale=scale, zero_point=zero_point)
+    delta = time.time() - start
+    print(f'Quantization: {1000*delta:.2f} milliseconds')
+
+    start = time.time()
+    z = mq.matmul_quant(q, x1.T, bits=bits, scale=scale, zero_point=zero_point)
     delta = time.time() - start
 
-    print(f'Time: {100*delta:.2f} milliseconds')
+    print(f'Matmul: {1000*delta:.2f} milliseconds')
+
+def profile_matmul_triton(N=1_048_576, N1=32, K=384, bits=8, device='cuda', dtype=torch.float16):
+    from . import matmul_triton as mq
+
+    # default quant params
+    grid = (1 << bits) - 1
+    scale, zero_point = 4.0/grid, 0.5*grid
+
+    x = torch.randn(N, K, device=device, dtype=dtype)
+    x1 = x[:N1].clone()
+
+    start = time.time()
+    q = mq.quantize(x, bits=bits, scale=scale, zero_point=zero_point)
+    delta = time.time() - start
+    print(f'Quantization: {1000*delta:.2f} milliseconds')
+
+    start = time.time()
+    z = mq.matmul_quant(q, x1.T, bits=bits, scale=scale, zero_point=zero_point)
+    delta = time.time() - start
+
+    print(f'Matmul: {1000*delta:.2f} milliseconds')
+
+def profile_matmul_extension(N=1_048_576, N1=32, K=384, bits=8, device='cpu', dtype=torch.float32):
+    import matmul_quant as mq
+
+    # default quant params
+    grid = (1 << bits) - 1
+    scale, zero_point = 4.0/grid, 0.5*grid
+
+    x = torch.randn(N, K, device=device, dtype=dtype)
+    x1 = x[:N1].clone()
+
+    start = time.time()
+    q = mq.quantize(x, bits, scale, zero_point)
+    delta = time.time() - start
+    print(f'Quantization: {1000*delta:.2f} milliseconds')
+
+    start = time.time()
+    z = mq.matmul_quant(q, x1.T, bits, scale, zero_point)
+    delta = time.time() - start
+    print(f'Matmul: {1000*delta:.2f} milliseconds')
 
 def check_embed(mod_ll, mod_st, path, normalize=True, cpu=False, max_len=512, max_rows=None, trust_remote_code=False):
     from sentence_transformers import SentenceTransformer

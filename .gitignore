@@ -11,6 +11,7 @@ ziggy.egg-info
 /onnx
 
 /extension/build
+/extension/libtorch
 /extension/libtorch_cpu
 /extension/libtorch_cuda
 /extension/dist

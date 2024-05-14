@@ -123,7 +123,7 @@ def profile_tokenizer(
     print(f'Time: {delta:.2f} seconds')
     print(f'Speed: {speed:.2f} chunks/second')
 
-def profile_matmul_torch(N=1_048_576, N1=32, K=384, bits=8, device='cpu', dtype=torch.float32):
+def profile_matmul_torch(N=1_048_576, N1=1, K=384, bits=8, device='cpu', dtype=torch.float32, batch_size=1024):
     from . import matmul_torch as mq
 
     # default quant params
@@ -134,17 +134,17 @@ def profile_matmul_torch(N=1_048_576, N1=32, K=384, bits=8, device='cpu', dtype=
     x1 = x[:N1].clone()
 
     start = time.time()
-    q = mq.quantize(x, bits=bits, scale=scale, zero_point=zero_point)
+    q = mq.quantize(x, bits=bits, scale=scale, zero_point=zero_point, batch_size=batch_size)
     delta = time.time() - start
     print(f'Quantization: {1000*delta:.2f} milliseconds')
 
     start = time.time()
-    z = mq.matmul_quant(q, x1.T, bits=bits, scale=scale, zero_point=zero_point)
+    z = mq.matmul_quant(q, x1.T, bits=bits, scale=scale, zero_point=zero_point, batch_size=batch_size)
     delta = time.time() - start
 
     print(f'Matmul: {1000*delta:.2f} milliseconds')
 
-def profile_matmul_triton(N=1_048_576, N1=32, K=384, bits=8, device='cuda', dtype=torch.float16):
+def profile_matmul_triton(N=1_048_576, N1=1, K=384, bits=8, device='cuda', dtype=torch.float16):
     from . import matmul_triton as mq
 
     # default quant params
@@ -165,7 +165,7 @@ def profile_matmul_triton(N=1_048_576, N1=32, K=384, bits=8, device='cuda', dtyp
 
     print(f'Matmul: {1000*delta:.2f} milliseconds')
 
-def profile_matmul_extension(N=1_048_576, N1=32, K=384, bits=8, device='cpu', dtype=torch.float32):
+def profile_matmul_extension(N=1_048_576, N1=1, K=384, bits=8, device='cpu', dtype=torch.float32):
     import matmul_quant as mq
 
     # default quant params

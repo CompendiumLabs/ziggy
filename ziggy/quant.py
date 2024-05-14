@@ -7,16 +7,43 @@ import torch
 from .utils import resize_alloc, MissingModule
 
 ##
-## Load fast quantization extension
+## Load fast quantization routines
 ##
 
+from . import matmul_torch as mq_torch
+
 try:
-    import matmul_quant as mq
-    # import extension.matmul_triton as mq
+    from . import matmul_triton as mq_triton
 except ImportError:
-    mq = MissingModule(
+    mq_triton = MissingModule(
         'Failed to import matmul_triton',
     )
+
+def quantize(x, bits, scale, zero_point):
+    if x.device == 'cuda':
+        return mq_triton.quantize(x, bits, scale, zero_point)
+    else:
+        return mq_torch.quantize(x, bits, scale, zero_point)
+
+def dequantize(x, bits, scale, zero_point, dtype):
+    if x.device == 'cuda':
+        return mq_triton.dequantize(x, bits, scale, zero_point, dtype)
+    else:
+        return mq_torch.dequantize(x, bits, scale, zero_point, dtype)
+
+def matmul_float(x, y):
+    assert(x.device == y.device)
+    if x.device == 'cuda':
+        return mq_triton.matmul(x, y)
+    else:
+        return mq_torch.matmul(x, y)
+
+def matmul_quant(x, y, bits, scale, zero_point):
+    assert(x.device == y.device)
+    if x.device == 'cuda':
+        return mq_triton.matmul(x, y, bits, scale, zero_point)
+    else:
+        return mq_torch.matmul(x, y, bits, scale, zero_point)
 
 ##
 ## QuantizedEmbedding
@@ -37,9 +64,9 @@ def qtype_to_dtype(qtype):
     if is_quantized(qtype):
         return torch.uint8
     elif qtype == QuantType.float:
-        return torch.float
+        return torch.float32
     elif qtype == QuantType.half:
-        return torch.half
+        return torch.float16
     else:
         raise ValueError(f'Invalid quantization type: {qtype}')
 
@@ -106,41 +133,35 @@ class QuantSpec:
             'zero_point': self.zero_point,
         }
 
-    def quantize(self, vec):
+    def quantize(self, x):
         if self.is_quantized:
-            return mq.quantize(
-                vec, self.bits, self.scale, self.zero_point
+            return quantize(
+                x, self.bits, self.scale, self.zero_point
             )
         else:
-            return vec.to(dtype=self.dtype)
+            return x.to(dtype=self.dtype)
 
-    def dequantize(self, vec, dtype=None):
+    def dequantize(self, x, dtype=None):
         # determine output dtype
         if dtype == None:
-            dtype = torch.half if vec.device == 'cuda' else torch.float
-        if dtype not in (torch.half, torch.float):
-            raise ValueError(f'Unsupported dtype: {dtype}')
+            dtype = torch.float16 if x.device == 'cuda' else torch.float32
 
         if self.is_quantized:
-            return mq.dequantize(
-                vec, dtype, self.bits, self.scale, self.zero_point
+            return dequantize(
+                x, self.bits, self.scale, self.zero_point, dtype
             )
         else:
-            return vec.to(dtype=dtype)
+            return x.to(dtype=dtype)
 
-    def matmul(self, a, b, dtype=None):
-        # determine output dtype
-        if dtype == None:
-            dtype = torch.half if b.device == 'cuda' else torch.float
-        if dtype not in (torch.half, torch.float):
-            raise ValueError(f'Unsupported dtype: {dtype}')
-
+    def matmul(self, a, b):
         if self.is_quantized:
-            return mq.matmul(
-                a, b.to(dtype), dtype, self.bits, self.scale, self.zero_point
+            return matmul_quant(
+                a, b, self.bits, self.scale, self.zero_point
             )
         else:
-            return a @ b.to(dtype=self.dtype)
+            return matmul_float(
+                a, b, self.bits, self.scale, self.zero_point
+            )
 
 Half = QuantSpec(QuantType.half)
 Float = QuantSpec(QuantType.float)

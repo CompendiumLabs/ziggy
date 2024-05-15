@@ -2,7 +2,7 @@
 
 import torch
 
-from .utils import batch_indices
+from ..utils import batch_indices
 
 def _quantize(x, bits, scale, zero_point):
     N, K = x.shape

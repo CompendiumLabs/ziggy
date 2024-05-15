@@ -4,7 +4,7 @@ from typing import Any
 from enum import Enum
 import torch
 
-from .matmul import quantize, dequantize, matmul_float, matmul_quant
+from .backends.quant import quantize, dequantize, matmul_float, matmul_quant
 from .utils import resize_alloc
 
 ##

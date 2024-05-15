@@ -124,7 +124,7 @@ def profile_tokenizer(
     print(f'Speed: {speed:.2f} chunks/second')
 
 def profile_matmul_torch(N=1_048_576, N1=1, K=384, bits=8, device='cpu', dtype=torch.float32, batch_size=1024):
-    from . import matmul_torch as mq
+    from .backends import quant_torch as mq
 
     # default quant params
     grid = (1 << bits) - 1
@@ -145,7 +145,7 @@ def profile_matmul_torch(N=1_048_576, N1=1, K=384, bits=8, device='cpu', dtype=t
     print(f'Matmul: {1000*delta:.2f} milliseconds')
 
 def profile_matmul_triton(N=1_048_576, N1=1, K=384, bits=8, device='cuda', dtype=torch.float16):
-    from . import matmul_triton as mq
+    from .backends import quant_triton as mq
 
     # default quant params
     grid = (1 << bits) - 1
@@ -166,7 +166,7 @@ def profile_matmul_triton(N=1_048_576, N1=1, K=384, bits=8, device='cuda', dtype
     print(f'Matmul: {1000*delta:.2f} milliseconds')
 
 def profile_matmul_extension(N=1_048_576, N1=1, K=384, bits=8, device='cpu', dtype=torch.float32):
-    import matmul_quant as mq
+    from .backends import quant_extension as mq
 
     # default quant params
     grid = (1 << bits) - 1

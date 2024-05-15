@@ -246,7 +246,7 @@ Tensor quantize_cpu(Tensor a, unsigned int bits, float scale, float zero_point) 
 }
 
 // this assumes normal strides since `a` is packed anyway
-Tensor dequantize_cpu(Tensor a, at::ScalarType typeb, unsigned int bits, float scale, float zero_point) {
+Tensor dequantize_cpu(Tensor a, unsigned int bits, float scale, float zero_point, at::ScalarType typeb) {
     at::ScalarType typea = a.scalar_type();
     at::IntArrayRef sizesa = a.sizes();
     at::IntArrayRef stridesa = a.strides();

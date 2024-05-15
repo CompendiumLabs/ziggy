@@ -4,49 +4,8 @@ from typing import Any
 from enum import Enum
 import torch
 
-from .utils import resize_alloc, MissingModule
-
-##
-## Load fast quantization routines
-##
-
-from . import matmul_torch as mq_torch
-
-try:
-    try:
-        import matmul_quant as mq_cuda
-    except ImportError:
-        from . import matmul_triton as mq_cuda
-except ImportError:
-    mq_triton = MissingModule(
-        'Failed to import matmul_triton',
-    )
-
-def quantize(x, bits, scale, zero_point):
-    if x.device.type == 'cuda':
-        return mq_cuda.quantize(x, bits, scale, zero_point)
-    else:
-        return mq_torch.quantize(x, bits, scale, zero_point)
-
-def dequantize(x, bits, scale, zero_point, dtype):
-    if x.device.type == 'cuda':
-        return mq_cuda.dequantize(x, bits, scale, zero_point, dtype)
-    else:
-        return mq_torch.dequantize(x, bits, scale, zero_point, dtype)
-
-def matmul_float(x, y):
-    assert(x.device == y.device)
-    if x.device.type == 'cuda':
-        return mq_cuda.matmul_float(x, y)
-    else:
-        return mq_torch.matmul_float(x, y)
-
-def matmul_quant(x, y, bits, scale, zero_point):
-    assert(x.device == y.device)
-    if x.device.type == 'cuda':
-        return mq_cuda.matmul_quant(x, y, bits, scale, zero_point)
-    else:
-        return mq_torch.matmul_quant(x, y, bits, scale, zero_point)
+from .matmul import quantize, dequantize, matmul_float, matmul_quant
+from .utils import resize_alloc
 
 ##
 ## QuantizedEmbedding

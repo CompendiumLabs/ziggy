@@ -23,13 +23,13 @@ Tensor quantize(Tensor a, unsigned int bits, float scale, float zero_point) {
 }
 
 // there is already a torch.dequantize
-Tensor dequantize1(Tensor a, const std::string& typeb_str, unsigned int bits, float scale, float zero_point) {
+Tensor dequantize1(Tensor a, unsigned int bits, float scale, float zero_point, const std::string& typeb_str) {
   at::ScalarType typeb = dtype_string_to_scalar_type(typeb_str);
   at::Device device = a.device();
   if (device.is_cuda()) {
-    return dequantize_cuda(a, typeb, bits, scale, zero_point);
+    return dequantize_cuda(a, bits, scale, zero_point, typeb);
   } else if (device.is_cpu()) {
-    return dequantize_cpu(a, typeb, bits, scale, zero_point);
+    return dequantize_cpu(a, bits, scale, zero_point, typeb);
   } else {
     TORCH_CHECK(false, "dequantize not implemented for '", device, "'");
   }

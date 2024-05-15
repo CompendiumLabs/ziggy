@@ -1,5 +1,6 @@
 # combined matmul interface
 
+import os
 import torch
 
 from ..utils import MissingModule
@@ -8,11 +9,21 @@ from ..utils import MissingModule
 ## load available submodules
 ##
 
+def get_bool_env(name, default=False):
+    if name in os.environ:
+        value = os.environ[name].lower()
+        return value in ['true', '1']
+    else:
+        return default
+
 try:
+    disable_extension = get_bool_env('ZIGGY_DISABLE_EXTENSION')
+    assert(not disable_extension)
+
     from . import quant_extension
     quant_cpu = quant_extension
     quant_cuda = quant_extension
-except ImportError:
+except (ImportError, AssertionError):
     from . import quant_torch as quant_cpu
     try:
         from . import quant_triton as quant_cuda

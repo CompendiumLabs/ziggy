@@ -42,7 +42,6 @@ def quantize_kernel(
     dtype = X.dtype.element_ty
     scale_ty = tl.full((), scale, dtype=dtype)
     zero_point_ty = tl.full((), zero_point, dtype=dtype)
-    half_ty = tl.full((), 0.5, dtype=dtype)
 
     # quantization params
     QMASK = (1 << BITS) - 1
@@ -75,7 +74,7 @@ def quantize_kernel(
 
     # quantize data
     xf = clamp(x / scale_ty + zero_point_ty, 0.0, QMASK_FLT)
-    xi = (xf + half_ty).to(tl.uint8) # round to nearest
+    xi = tl.math.rint(xf).to(tl.uint8) # round-to-nearest-even
     xq = xi << x_shift
 
     # compress quantized data

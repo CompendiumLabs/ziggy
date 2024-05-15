@@ -1,5 +1,7 @@
 # combined matmul interface
 
+import torch
+
 from .utils import MissingModule
 
 ##
@@ -7,15 +9,18 @@ from .utils import MissingModule
 ##
 
 try:
-    import matmul_quant
-    matmul_cpu = matmul_quant
-    matmul_cuda = matmul_quant
+    import matmul_quant as matmul_extension
 
     # monkey patch dequantize to use standard dtype
-    matmul_quant._dequantize = matmul_quant.dequantize
+    matmul_extension._dequantize = matmul_extension.dequantize
     def dequantize(x, bits, scale, zero_point, dtype):
         dtype_str = 'half' if dtype == torch.float16 else 'float'
-        return matmul_quant._dequantize(x, bits, scale, zero_point, dtype_str)
+        return matmul_extension._dequantize(x, bits, scale, zero_point, dtype_str)
+    matmul_extension.dequantize = dequantize
+
+    # assign extension for both devices
+    matmul_cpu = matmul_extension
+    matmul_cuda = matmul_extension
 except ImportError:
     from . import matmul_torch as matmul_cpu
     try:

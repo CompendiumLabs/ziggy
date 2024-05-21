@@ -258,7 +258,8 @@ def matmul_quant_kernel(
         a = ai.to(dtype) - zero_point_ty
 
         # do the actual matmul
-        acc += tl.dot(a, b, out_dtype=dtype)
+        b1 = b.to(dtype)
+        acc += tl.dot(a, b1, out_dtype=dtype)
     
         # increment A by BLOCK_SIZE_K
         A1 += BLOCK_SIZE_K1 * stride_ak
@@ -306,8 +307,6 @@ def quantize(x, bits, scale, zero_point):
     return y
 
 def dequantize(x, bits, scale, zero_point, dtype):
-    assert(x.is_contiguous())
-
     # tensor information
     device = x.device
     N, K1 = x.shape
@@ -337,23 +336,18 @@ def dequantize(x, bits, scale, zero_point, dtype):
     # return result
     return y
 
-def matmul_float(x, y, dtype=None):
-    # device information
-    assert(x.device == y.device)
-    device = x.device
-
-    # detect dtype
-    if dtype is None:
-        dtype = y.dtype
-
+def matmul_float(x, y):
     # shape information
     N, Kx = x.size()
     Ky, M = y.size()
-    assert(Kx == Ky)
+    device = x.device
     K = Kx
 
+    assert(x.device == y.device)
+    assert(Kx == Ky)
+
     # output allocate
-    z = torch.zeros((N, M), device=device, dtype=dtype)
+    z = torch.zeros((N, M), device=device, dtype=torch.float32)
 
     # stride information
     sxn, sxk = x.stride()
@@ -373,31 +367,25 @@ def matmul_float(x, y, dtype=None):
     # return result
     return z
 
-def matmul_quant(x, y, bits, scale, zero_point, dtype=None):
-    # device information
-    assert(x.device == y.device)
-    device = x.device
-
-    # detect dtype
-    if dtype is None:
-        dtype = y.dtype
-
+def matmul_quant(x, y, bits, scale, zero_point):
     # shape information
     N, Kx = x.size()
     Ky, M = y.size()
-
-    # dtype information
     QFACT = 8 // bits
     BLOCK_SIZE_K1 = BLOCK_SIZE_K // QFACT
+    device = x.device
+    K1, K = Kx, Ky
+
+    assert(x.device == y.device)
+    assert(x.is_contiguous())
     assert(Ky == Kx * QFACT)
-    assert(bits in [1, 2, 4, 8])
+    assert(8 % bits == 0)
     assert(x.dtype == torch.uint8)
     assert(scale is not None)
     assert(zero_point is not None)
-    K1, K = Kx, Ky
 
     # output allocate
-    z = torch.zeros((N, M), device=device, dtype=dtype)
+    z = torch.zeros((N, M), device=device, dtype=torch.float32)
 
     # stride information
     sxn, sxk = x.stride()

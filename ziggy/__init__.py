@@ -8,7 +8,7 @@ from . import guffy
 
 from .quant import QuantType, QuantSpec
 from .index import TorchVectorIndex
-from .embed import HuggingfaceEmbedding, LlamaCppEmbedding
+from .embed import HuggingfaceEmbedding, LlamaCppEmbedding, OpenAIEmbedding
 from .database import TextDatabase, DocumentDatabase, FilesystemDatabase
 from .bench import profile_embed, profile_tokenizer, check_embed, check_tokenizer
 from .guffy import Guffy

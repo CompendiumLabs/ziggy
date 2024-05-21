@@ -536,6 +536,7 @@ class OpenAIEmbedding:
     def embed(self, text, threaded=False):
         if type(text) is str:
             text = [text]
+        batches = batch_generator(iter(text), self.batch_size)
         return torch.cat([
-            self.embed_batch(chunk) for chunk in batch_generator(iter(text), self.batch_size)
+            self.embed_batch(chunk) for chunk in batches
         ], dim=0)

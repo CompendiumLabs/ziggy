@@ -23,7 +23,8 @@ try:
     from . import quant_extension
     quant_cpu = quant_extension
     quant_cuda = quant_extension
-except (ImportError, AssertionError):
+except (ImportError, AssertionError) as e:
+    print(e)
     from . import quant_torch as quant_cpu
     try:
         from . import quant_triton as quant_cuda

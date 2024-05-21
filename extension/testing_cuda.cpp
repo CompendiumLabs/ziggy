@@ -5,7 +5,7 @@
 
 #include "matmul_quant_cuda.h"
 
-const int64_t dim = 8;
+const int64_t dim = 16;
 const int64_t n = 4;
 const int64_t m = 8;
 
@@ -56,7 +56,7 @@ int main(int argc, char ** argv) {
     std::cout << std::endl;
 
     // dequantize and unpack
-    Tensor a1 = dequantize_cuda(qa, torch::kFloat, bits, scale, zero_point);
+    Tensor a1 = dequantize_cuda(qa, bits, scale, zero_point, torch::kFloat);
     std::cout << "Dequantized:" << std::endl;
     std::cout << a1 << std::endl;
     std::cout << std::endl;

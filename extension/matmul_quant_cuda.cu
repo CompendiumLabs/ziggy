@@ -15,86 +15,37 @@ DISPATCH_BITWIDTH(bits, [&] {
 
 using namespace torch;
 
+// global constants
+
 constexpr int64_t kWarpSize = 32;
 constexpr int64_t MAX_GRID = 65535;
 
-template <unsigned int bits>
-__global__ void matmul_quant_float_kernel(uint8_t* a, float* b, float* c, int64_t sn, int64_t sm, int64_t sk, int64_t tan, int64_t tak, int64_t tbk, int64_t tbm, float scale, float zero_point) {
-    constexpr uint8_t mask = (1 << bits) - 1;
+// half-float conversion utils
 
-    int64_t i0 = blockIdx.x * blockDim.x + threadIdx.x;
-    int64_t j0 = blockIdx.y * blockDim.y + threadIdx.y;
+template <typename scalar1_t, typename scalar2_t>
+__inline__ __device__ float multiply_float(scalar1_t x, scalar2_t y);
 
-    int64_t grid_stride_x = gridDim.x * blockDim.x;
-    int64_t grid_stride_y = gridDim.y * blockDim.y;
-
-    for (int64_t i = i0; i < sn; i += grid_stride_x) {
-        for (int64_t j = j0; j < sm; j += grid_stride_y) {
-            uint8_t* posa = a + i * tan;
-            float* posb = b + j * tbm;
-            float sum = 0.0f;
-
-            for (int64_t k = 0; k < sk; k++) {
-                // load packed values
-                uint8_t vala = (*posa);
-
-                // unpack into bits-sized values
-                for (int s = 0; s < 8; s += bits) {
-                    uint8_t vala_i = (uint8_t)((vala >> s) & mask);
-                    float vala_f = (float)vala_i - zero_point;
-                    float valb_f = (*posb);
-                    sum += vala_f * valb_f;
-                    posb += tbk;
-                }
-
-                // increment base value
-                posa += tak;
-            }
-
-            c[i * sm + j] = scale*sum;
-        }
-    }
+template <>
+__inline__ __device__ float multiply_float(float x, float y) {
+    return x * y;
 }
 
-template <unsigned int bits>
-__global__ void matmul_quant_half_kernel(uint8_t* a, __half* b, __half* c, int64_t sn, int64_t sm, int64_t sk, int64_t tan, int64_t tak, int64_t tbk, int64_t tbm, float scale, float zero_point) {
-    constexpr uint8_t mask = (1 << bits) - 1;
-
-    __half scale_h = __float2half(scale);
-
-    int64_t i0 = blockIdx.x * blockDim.x + threadIdx.x;
-    int64_t j0 = blockIdx.y * blockDim.y + threadIdx.y;
-
-    int64_t grid_stride_x = gridDim.x * blockDim.x;
-    int64_t grid_stride_y = gridDim.y * blockDim.y;
-
-    for (int64_t i = i0; i < sn; i += grid_stride_x) {
-        for (int64_t j = j0; j < sm; j += grid_stride_y) {
-            uint8_t* posa = a + i * tan;
-            __half* posb = b + j * tbm;
-            __half sum = __float2half(0.0f);
-
-            for (int64_t k = 0; k < sk; k++) {
-                // load packed values
-                uint8_t vala = (*posa);
-
-                // unpack into bits-sized values
-                for (int s = 0; s < 8; s += bits) {
-                    uint8_t vala_i = (uint8_t)((vala >> s) & mask);
-                    __half vala_h = __float2half((float)vala_i - zero_point);
-                    __half valb_h = (*posb);
-                    sum = __hadd(sum, __hmul(vala_h, valb_h));
-                    posb += tbk;
-                }
-
-                // increment base value
-                posa += tak;
-            }
-
-            c[i * sm + j] = __hmul(scale_h, sum);
-        }
-    }
+template <>
+__inline__ __device__ float multiply_float(float x, __half y) {
+    return x * __half2float(y);
 }
+
+template <>
+__inline__ __device__ float multiply_float(__half x, float y) {
+    return __half2float(x) * y;
+}
+
+template <>
+__inline__ __device__ float multiply_float(__half x, __half y) {
+    return __half2float(x) * __half2float(y);
+}
+
+// quantization kernels
 
 // we need to use unsigned intN packing here
 template <unsigned int bits>
@@ -231,101 +182,67 @@ __global__ void dequantize_half_kernel(uint8_t* a, __half* b, int64_t sn, int64_
     }
 }
 
-Tensor matmul_quant_cuda(Tensor a, Tensor b, unsigned int bits, float scale, float zero_point) {
-    at::Device devicea = a.device();
-    at::Device deviceb = b.device();
+template <typename scalar1_t, typename scalar2_t>
+__global__ void matmul_float_kernel(scalar1_t* a, scalar2_t* b, float* c, int64_t sn, int64_t sm, int64_t sk, int64_t tan, int64_t tak, int64_t tbk, int64_t tbm) {
+    int64_t i0 = blockIdx.x * blockDim.x + threadIdx.x;
+    int64_t j0 = blockIdx.y * blockDim.y + threadIdx.y;
 
-    at::ScalarType typea = a.scalar_type();
-    at::ScalarType typeb = b.scalar_type();
+    int64_t grid_stride_x = gridDim.x * blockDim.x;
+    int64_t grid_stride_y = gridDim.y * blockDim.y;
 
-    at::IntArrayRef sizesa = a.sizes();
-    at::IntArrayRef sizesb = b.sizes();
-    at::IntArrayRef stridesa = a.strides();
-    at::IntArrayRef stridesb = b.strides();
+    for (int64_t i = i0; i < sn; i += grid_stride_x) {
+        for (int64_t j = j0; j < sm; j += grid_stride_y) {
+            scalar1_t* posa = a + i * tan;
+            scalar2_t* posb = b + j * tbm;
+            float sum = 0.0f;
 
-    assert(devicea == deviceb);
-    assert(typea == torch::kUInt8);
-    assert((8 / bits) * sizesa[1] == sizesb[0]);
-
-    int64_t sn = sizesa[0];
-    int64_t sm = sizesb[1];
-    int64_t sk = sizesa[1];
-    int64_t tan = stridesa[0];
-    int64_t tak = stridesa[1];
-    int64_t tbk = stridesb[0];
-    int64_t tbm = stridesb[1];
-
-    uint8_t* a_ptr = a.data_ptr<uint8_t>();
-
-    dim3 threads(kWarpSize, kWarpSize);
-    dim3 blocks(
-        min(MAX_GRID, (sn + threads.x - 1) / threads.x),
-        min(MAX_GRID, (sm + threads.y - 1) / threads.y)
-    );
-
-    switch (typeb) {
-        case at::kHalf: {
-            Tensor c = at::empty({sn, sm}, at::device(kCUDA).dtype(torch::kHalf));
-
-            __half* b_ptr = reinterpret_cast<__half*>(b.data_ptr<at::Half>());
-            __half* c_ptr = reinterpret_cast<__half*>(c.data_ptr<at::Half>());
-
-            switch (bits) {
-                case 8: {
-                    matmul_quant_half_kernel<8><<<blocks, threads>>>(a_ptr, b_ptr, c_ptr, sn, sm, sk, tan, tak, tbk, tbm, scale, zero_point);
-                    break;
-                }
-                case 4: {
-                    matmul_quant_half_kernel<4><<<blocks, threads>>>(a_ptr, b_ptr, c_ptr, sn, sm, sk, tan, tak, tbk, tbm, scale, zero_point);
-                    break;
-                }
-                case 2: {
-                    matmul_quant_half_kernel<2><<<blocks, threads>>>(a_ptr, b_ptr, c_ptr, sn, sm, sk, tan, tak, tbk, tbm, scale, zero_point);
-                    break;
-                }
-                case 1: {
-                    matmul_quant_half_kernel<1><<<blocks, threads>>>(a_ptr, b_ptr, c_ptr, sn, sm, sk, tan, tak, tbk, tbm, scale, zero_point);
-                    break;
-                }
-                default: {
-                    TORCH_CHECK(false, "Unsupported number of quantization bits '", bits, "'");
-                }
+            for (int64_t k = 0; k < sk; k++) {
+                scalar1_t vala = (*posa);
+                scalar2_t valb = (*posb);
+                sum += multiply_float<scalar1_t, scalar2_t>(vala, valb);
+                posa += tak;
+                posb += tbk;
             }
 
-            return c;
+            c[i * sm + j] = sum;
         }
-        case at::kFloat: {
-            Tensor c = at::empty({sn, sm}, at::device(kCUDA).dtype(torch::kFloat));
+    }
+}
 
-            float* b_ptr = b.data_ptr<float>();
-            float* c_ptr = c.data_ptr<float>();
+template <unsigned int bits, typename scalar_t>
+__global__ void matmul_quant_kernel(uint8_t* a, scalar_t* b, float* c, int64_t sn, int64_t sm, int64_t sk, int64_t tan, int64_t tak, int64_t tbk, int64_t tbm, float scale, float zero_point) {
+    constexpr uint8_t mask = (1 << bits) - 1;
 
-            switch (bits) {
-                case 8: {
-                    matmul_quant_float_kernel<8><<<blocks, threads>>>(a_ptr, b_ptr, c_ptr, sn, sm, sk, tan, tak, tbk, tbm, scale, zero_point);
-                    break;
+    int64_t i0 = blockIdx.x * blockDim.x + threadIdx.x;
+    int64_t j0 = blockIdx.y * blockDim.y + threadIdx.y;
+
+    int64_t grid_stride_x = gridDim.x * blockDim.x;
+    int64_t grid_stride_y = gridDim.y * blockDim.y;
+
+    for (int64_t i = i0; i < sn; i += grid_stride_x) {
+        for (int64_t j = j0; j < sm; j += grid_stride_y) {
+            uint8_t* posa = a + i * tan;
+            scalar_t* posb = b + j * tbm;
+            float sum = 0.0f;
+
+            for (int64_t k = 0; k < sk; k++) {
+                // load packed values
+                uint8_t vala = (*posa);
+
+                // unpack into bits-sized values
+                for (int s = 0; s < 8; s += bits) {
+                    uint8_t vala_i = (uint8_t)((vala >> s) & mask);
+                    float vala_f = (float)vala_i - zero_point;
+                    scalar_t valb_f = (*posb);
+                    sum += multiply_float<float, scalar_t>(vala_f, valb_f);
+                    posb += tbk;
                 }
-                case 4: {
-                    matmul_quant_float_kernel<4><<<blocks, threads>>>(a_ptr, b_ptr, c_ptr, sn, sm, sk, tan, tak, tbk, tbm, scale, zero_point);
-                    break;
-                }
-                case 2: {
-                    matmul_quant_float_kernel<2><<<blocks, threads>>>(a_ptr, b_ptr, c_ptr, sn, sm, sk, tan, tak, tbk, tbm, scale, zero_point);
-                    break;
-                }
-                case 1: {
-                    matmul_quant_float_kernel<1><<<blocks, threads>>>(a_ptr, b_ptr, c_ptr, sn, sm, sk, tan, tak, tbk, tbm, scale, zero_point);
-                    break;
-                }
-                default: {
-                    TORCH_CHECK(false, "Unsupported number of quantization bits '", bits, "'");
-                }
+
+                // increment base value
+                posa += tak;
             }
 
-            return c;
-        }
-        default: {
-            TORCH_CHECK(false, "Unsupported type for comparison tensor '", typeb, "'");
+            c[i * sm + j] = scale * sum;
         }
     }
 }
@@ -490,4 +407,186 @@ Tensor dequantize_cuda(Tensor a, unsigned int bits, float scale, float zero_poin
     }
 
     return b;
+}
+
+// always uses float32 accumulation
+Tensor matmul_float_cuda(Tensor a, Tensor b) {
+    at::Device devicea = a.device();
+    at::Device deviceb = b.device();
+
+    at::ScalarType typea = a.scalar_type();
+    at::ScalarType typeb = b.scalar_type();
+
+    at::IntArrayRef sizesa = a.sizes();
+    at::IntArrayRef sizesb = b.sizes();
+    at::IntArrayRef stridesa = a.strides();
+    at::IntArrayRef stridesb = b.strides();
+
+    assert(devicea == deviceb);
+    assert(sizesa[1] == sizesb[0]);
+
+    int64_t sn = sizesa[0];
+    int64_t sm = sizesb[1];
+    int64_t sk = sizesa[1];
+    int64_t tan = stridesa[0];
+    int64_t tak = stridesa[1];
+    int64_t tbk = stridesb[0];
+    int64_t tbm = stridesb[1];
+
+    dim3 threads(kWarpSize, kWarpSize);
+    dim3 blocks(
+        min(MAX_GRID, (sn + threads.x - 1) / threads.x),
+        min(MAX_GRID, (sm + threads.y - 1) / threads.y)
+    );
+
+    Tensor c = at::empty({sn, sm}, at::device(kCUDA).dtype(torch::kFloat));
+    float* c_ptr = c.data_ptr<float>();
+
+    switch (typea) {
+        case torch::kHalf: {
+            __half* a_ptr = reinterpret_cast<__half*>(a.data_ptr<at::Half>());
+
+            switch (typeb) {
+                case torch::kHalf: {
+                    __half* b_ptr = reinterpret_cast<__half*>(b.data_ptr<at::Half>());
+
+                    matmul_float_kernel<__half, __half><<<blocks, threads>>>(a_ptr, b_ptr, c_ptr, sn, sm, sk, tan, tak, tbk, tbm);
+                    break;
+                }
+                case torch::kFloat: {
+                    float* b_ptr = b.data_ptr<float>();
+
+                    matmul_float_kernel<__half, float><<<blocks, threads>>>(a_ptr, b_ptr, c_ptr, sn, sm, sk, tan, tak, tbk, tbm);
+                    break;
+                }
+                default: {
+                    TORCH_CHECK(false, "Unsupported type for comparison tensor '", typeb, "'");
+                }
+            }
+            break;
+        }
+        case torch::kFloat: {
+            float* a_ptr = a.data_ptr<float>();
+
+            switch (typeb) {
+                case torch::kHalf: {
+                    __half* b_ptr = reinterpret_cast<__half*>(b.data_ptr<at::Half>());
+
+                    matmul_float_kernel<float, __half><<<blocks, threads>>>(a_ptr, b_ptr, c_ptr, sn, sm, sk, tan, tak, tbk, tbm);
+                    break;
+                }
+                case torch::kFloat: {
+                    float* b_ptr = b.data_ptr<float>();
+
+                    matmul_float_kernel<float, float><<<blocks, threads>>>(a_ptr, b_ptr, c_ptr, sn, sm, sk, tan, tak, tbk, tbm);
+                    break;
+                }
+                default: {
+                    TORCH_CHECK(false, "Unsupported type for comparison tensor '", typeb, "'");
+                }
+            }
+            break;
+        }
+        default: {
+            TORCH_CHECK(false, "Unsupported type for input tensor '", typea, "'");
+        }
+    }
+
+    return c;
+}
+
+Tensor matmul_quant_cuda(Tensor a, Tensor b, unsigned int bits, float scale, float zero_point) {
+    at::Device devicea = a.device();
+    at::Device deviceb = b.device();
+
+    at::ScalarType typea = a.scalar_type();
+    at::ScalarType typeb = b.scalar_type();
+
+    at::IntArrayRef sizesa = a.sizes();
+    at::IntArrayRef sizesb = b.sizes();
+    at::IntArrayRef stridesa = a.strides();
+    at::IntArrayRef stridesb = b.strides();
+
+    assert(devicea == deviceb);
+    assert(typea == torch::kUInt8);
+    assert((8 / bits) * sizesa[1] == sizesb[0]);
+
+    int64_t sn = sizesa[0];
+    int64_t sm = sizesb[1];
+    int64_t sk = sizesa[1];
+    int64_t tan = stridesa[0];
+    int64_t tak = stridesa[1];
+    int64_t tbk = stridesb[0];
+    int64_t tbm = stridesb[1];
+
+    Tensor c = at::empty({sn, sm}, at::device(kCUDA).dtype(torch::kFloat));
+
+    uint8_t* a_ptr = a.data_ptr<uint8_t>();
+    float* c_ptr = c.data_ptr<float>();
+
+    dim3 threads(kWarpSize, kWarpSize);
+    dim3 blocks(
+        min(MAX_GRID, (sn + threads.x - 1) / threads.x),
+        min(MAX_GRID, (sm + threads.y - 1) / threads.y)
+    );
+
+    switch (typeb) {
+        case at::kHalf: {
+            __half* b_ptr = reinterpret_cast<__half*>(b.data_ptr<at::Half>());
+
+            switch (bits) {
+                case 8: {
+                    matmul_quant_kernel<8, half><<<blocks, threads>>>(a_ptr, b_ptr, c_ptr, sn, sm, sk, tan, tak, tbk, tbm, scale, zero_point);
+                    break;
+                }
+                case 4: {
+                    matmul_quant_kernel<4, half><<<blocks, threads>>>(a_ptr, b_ptr, c_ptr, sn, sm, sk, tan, tak, tbk, tbm, scale, zero_point);
+                    break;
+                }
+                case 2: {
+                    matmul_quant_kernel<2, half><<<blocks, threads>>>(a_ptr, b_ptr, c_ptr, sn, sm, sk, tan, tak, tbk, tbm, scale, zero_point);
+                    break;
+                }
+                case 1: {
+                    matmul_quant_kernel<1, half><<<blocks, threads>>>(a_ptr, b_ptr, c_ptr, sn, sm, sk, tan, tak, tbk, tbm, scale, zero_point);
+                    break;
+                }
+                default: {
+                    TORCH_CHECK(false, "Unsupported number of quantization bits '", bits, "'");
+                }
+            }
+
+            return c;
+        }
+        case at::kFloat: {
+            float* b_ptr = b.data_ptr<float>();
+
+            switch (bits) {
+                case 8: {
+                    matmul_quant_kernel<8, float><<<blocks, threads>>>(a_ptr, b_ptr, c_ptr, sn, sm, sk, tan, tak, tbk, tbm, scale, zero_point);
+                    break;
+                }
+                case 4: {
+                    matmul_quant_kernel<4, float><<<blocks, threads>>>(a_ptr, b_ptr, c_ptr, sn, sm, sk, tan, tak, tbk, tbm, scale, zero_point);
+                    break;
+                }
+                case 2: {
+                    matmul_quant_kernel<2, float><<<blocks, threads>>>(a_ptr, b_ptr, c_ptr, sn, sm, sk, tan, tak, tbk, tbm, scale, zero_point);
+                    break;
+                }
+                case 1: {
+                    matmul_quant_kernel<1, float><<<blocks, threads>>>(a_ptr, b_ptr, c_ptr, sn, sm, sk, tan, tak, tbk, tbm, scale, zero_point);
+                    break;
+                }
+                default: {
+                    TORCH_CHECK(false, "Unsupported number of quantization bits '", bits, "'");
+                }
+            }
+
+            return c;
+        }
+        default: {
+            TORCH_CHECK(false, "Unsupported type for comparison tensor '", typeb, "'");
+        }
+    }
 }

@@ -56,6 +56,19 @@ def stream_jsonl(path, max_rows=None):
                 break
             yield json.loads(line)
 
+def stream_csv(path, batch_size=1024, max_rows=None):
+    import pandas as pd
+    n_total = 0
+    for batch in pd.read_csv(path, chunksize=batch_size):
+        n_batch = len(batch)
+        if max_rows is not None and n_total + n_batch >= max_rows:
+            rows_left = max_rows - n_total
+            yield batch.iloc[:rows_left]
+            break
+        else:
+            yield batch
+        n_total += n_batch
+
 ##
 ## generic text database
 ##
@@ -65,7 +78,7 @@ def stream_jsonl(path, max_rows=None):
 # index — TorchVectorIndex {label: vec}
 class TextDatabase:
     def __init__(
-            self, embed=None, device='cuda', onnx=True, batch_size=128,
+            self, embed, device='cuda', onnx=True,
             allocate=True, dims=None, qspec=None, **kwargs
         ):
         # store embedding model
@@ -98,22 +111,35 @@ class TextDatabase:
         return self
 
     @classmethod
-    def from_jsonl(
-        cls, path, name_col='title', text_col='text', doc_batch=1024, max_rows=None,
-        progress=True, threaded=True, truncate=False, **kwargs
-    ):
+    def from_batches(cls, iterable, progress=False, threaded=True, truncate=False, **kwargs):
         self = cls(**kwargs)
         n_total = 0
-        lines = stream_jsonl(path, max_rows=max_rows)
-        for i, batch in enumerate(batch_generator(lines, doc_batch)):
-            labels, text = zip(*[
-                (row[name_col], row[text_col]) for row in batch
-            ])
+        for i, batch in enumerate(iterable):
+            labels, text = zip(*batch)
             self.add(labels, text, threaded=threaded, truncate=truncate)
             n_total += len(batch)
             if progress:
                 print(f'{i:5d}: {n_total} documents')
         return self
+
+    @classmethod
+    def from_jsonl(
+        cls, path, name_col='title', text_col='text', batch_size=1024, max_rows=None, **kwargs
+    ):
+        lines = stream_jsonl(path, max_rows=max_rows)
+        data = ((row[name_col], row[text_col]) for row in lines)
+        batches = batch_generator(data, batch_size)
+        return cls.from_batches(batches, **kwargs)
+
+    @classmethod
+    def from_csv(
+        cls, path, name_col='title', text_col='text', batch_size=1024, max_rows=None, **kwargs
+    ):
+        batches = stream_csv(path, batch_size=batch_size, max_rows=max_rows)
+        data = (
+            batch[[name_col, text_col]].to_records(index=False).tolist() for batch in batches
+        )
+        return cls.from_batches(data, **kwargs)
 
     def save(self, path=None):
         data = {
@@ -215,13 +241,14 @@ class DocumentDatabase(TextDatabase):
 
     @classmethod
     def from_jsonl(
-        cls, path, name_col='title', text_col='text', doc_batch=1024, max_rows=None,
+        cls, path, name_col='title', text_col='text', batch_size=1024, max_rows=None,
         progress=True, threaded=True, truncate=False, **kwargs
     ):
         self = cls(**kwargs)
         n_total = 0
         lines = stream_jsonl(path, max_rows=max_rows)
-        for i, batch in enumerate(batch_generator(lines, doc_batch)):
+        batches = batch_generator(lines, batch_size)
+        for i, batch in enumerate(batches):
             self.add_docs([
                 (row[name_col], row[text_col]) for row in batch
             ], threaded=threaded, truncate=truncate)

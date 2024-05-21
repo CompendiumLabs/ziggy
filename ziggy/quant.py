@@ -19,6 +19,11 @@ class QuantType(Enum):
     qint2 = 4
     qint1 = 5
 
+    def __eq__(self, other):
+        if isinstance(other, QuantType):
+            return self.value == other.value
+        return False
+
 def is_quantized(qtype):
     return qtype in (QuantType.qint8, QuantType.qint4, QuantType.qint2, QuantType.qint1)
 
@@ -69,6 +74,13 @@ class QuantSpec:
             return f'{self.qtype.name}(scale={self.scale:.5g}, zero_point={self.zero_point:.5g})'
         else:
             return f'{self.qtype.name}'
+
+    def __eq__(self, other):
+        return (
+            self.qtype == other.qtype and
+            self.scale == other.scale and
+            self.zero_point == other.zero_point
+        )
 
     @classmethod
     def from_width(cls, qtype, zero, width):
@@ -121,9 +133,7 @@ class QuantSpec:
                 x, y, self.bits, self.scale, self.zero_point
             )
         else:
-            return matmul_float(
-                x, y, self.bits, self.scale, self.zero_point
-            )
+            return matmul_float(x, y)
 
 Half = QuantSpec(QuantType.half)
 Float = QuantSpec(QuantType.float)
@@ -158,7 +168,7 @@ class QuantizedEmbedding:
         if data is not None:
             self.data = self.quantize(data.to(device=device))
         elif qdata is not None:
-            self.data = qdata.to(device=device)
+            self.data = qdata.to(device=device, dtype=self.qspec.dtype)
         else:
             self.data = torch.empty(size, qdims, device=device, dtype=self.qspec.dtype)
 
@@ -169,6 +179,8 @@ class QuantizedEmbedding:
     def load(cls, data, device='cuda'):
         size, dims = data['data'].size()
         qspec = QuantSpec.load(data['qspec'])
+        if device == 'cpu' and qspec == Half:
+            qspec = Float # half precision not supported on CPU
         return cls(size, dims, qspec=qspec, qdata=data['data'], device=device)
 
     def save(self):

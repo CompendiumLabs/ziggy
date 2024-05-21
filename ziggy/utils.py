@@ -165,7 +165,6 @@ class RequestTracker:
         # get the current in period totals
         usage = tuple(map(list, zip(*[n for _, n in self.reqs])))
         total = tuple(map(sum, usage))
-        print(f'usage = {total}')
 
         # determine how long to wait for compliance
         if any([t > l for t, l in zip(total, self.lims)]):

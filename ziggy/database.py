@@ -78,7 +78,7 @@ def stream_csv(path, batch_size=1024, max_rows=None):
 # index — TorchVectorIndex {label: vec}
 class TextDatabase:
     def __init__(
-            self, embed, device='cuda', onnx=True,
+            self, embed=None, device='cuda', onnx=True,
             allocate=True, dims=None, qspec=None, **kwargs
         ):
         # store embedding model
@@ -91,21 +91,19 @@ class TextDatabase:
             self.index = TorchVectorIndex(self.dims, device=device, qspec=qspec, **kwargs)
 
     @classmethod
-    def load(cls, path, embed=None, device='cuda', check_embed=True, **kwargs):
+    def load(cls, path, embed=None, device='cuda', warn_embed=True, **kwargs):
         data = torch.load(path, map_location=device) if type(path) is str else path
 
         # check embedding compatibility
         embed_orig = data.get('embed', None)
         if embed is not None:
-            if check_embed:
+            if warn_embed:
                 embed_name = embed if type(embed) is str else embed.name
                 if embed_orig != embed_name:
-                    raise ValueError(f'Embedding mismatch: {embed_orig} != {embed_name}')
-        else:
-            embed = embed_orig
+                    print(f'Possible embedding mismatch: {embed_orig} != {embed_name}')
 
         # construct object
-        self = cls(embed=embed, allocate=False, **kwargs)
+        self = cls(embed, allocate=False, **kwargs)
         self.text = data['text']
         self.index = TorchVectorIndex.load(data['index'], device=device)
         return self

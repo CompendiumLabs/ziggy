@@ -109,12 +109,14 @@ def detect_pooling_type(repo_id):
         pool_data = json.load(f)
 
     # get pooling type
-    if pool_data['pooling_mode_cls_token']:
-        return 'cls'
-    elif pool_data['pooling_mode_mean_tokens']:
+    if pool_data['pooling_mode_mean_tokens']:
         return 'mean'
+    elif pool_data['pooling_mode_cls_token']:
+        return 'cls'
+    elif pool_data['pooling_mode_lasttoken']:
+        return 'last'
     elif pool_data['pooling_mode_max_tokens']:
-        raise NotImplementedError('max pooling not supported')
+        return 'max'
     elif pool_data['pooling_mode_mean_sqrt_len_tokens']:
         raise NotImplementedError('mean-sqrt-len pooling not supported')
 
@@ -157,7 +159,11 @@ class HuggingfaceEmbedding:
             self.tokenizer = AutoTokenizer.from_pretrained(model_id)
             self.model = AutoModel.from_pretrained(
                 model_id, device_map=device_map, torch_dtype=dtype, trust_remote_code=trust_remote_code
-            )
+            ).to(device=device)
+
+        # add padding token if missing
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
 
         # get pooling type
         if pooling_type is None:
@@ -189,22 +195,34 @@ class HuggingfaceEmbedding:
         # prepare model inputs on device
         input_ids = input_ids.to(self.device)
         attention_mask = attention_mask.to(self.device)
-        token_type_ids = torch.zeros(input_ids.shape, dtype=torch.int64, device=self.device)
+
+        # detect input arguments
+        fwd_args = dict(input_ids=input_ids, attention_mask=attention_mask)
+        if 'token_type_ids' in self.model.forward.__func__.__code__.co_names:
+            fwd_args['token_type_ids'] = torch.zeros(input_ids.shape, dtype=torch.int64, device=self.device)
 
         # get model output
         with torch.no_grad():
-            output = self.model(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)
+            output = self.model(**fwd_args)
         state = output[0]
 
         # get sentence embeddings
         pooling_type = self.pooling_type if pooling_type is None else pooling_type
+        mask = attention_mask.float().unsqueeze(-1)
         if pooling_type == 'mean':
-            mask = attention_mask.float().unsqueeze(-1)
             embed = (state*mask).sum(1)/mask.sum(1)
         elif pooling_type == 'cls':
             embed = state[:,0,:]
+        elif pooling_type == 'last':
+            rows_idx = [i for i in range(state.size(0))]
+            last_idx = attention_mask.sum(1) - 1
+            embed = state[rows_idx,last_idx,:]
+        elif pooling_type == 'max':
+            embed = (state*mask).max(1)
         elif pooling_type == 'none':
             embed = torch.where(attention_mask.unsqueeze(-1) == 1, state, torch.nan)
+        else:
+            raise ValueError(f'Pooling type {pooling_type} not recognized')
 
         # normalized embedding
         if normalize:

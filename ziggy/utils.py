@@ -72,7 +72,8 @@ def list_splitter(text, maxlen):
 def l2mean(x, dim=0):
     if x.size(dim) == 1:
         return x.squeeze(dim)
-    return x.square().mean(dim=dim).sqrt()
+    y = (x.sign()*x.square()).mean(dim)
+    return y.sign()*y.abs().sqrt()
 
 ##
 ## importing

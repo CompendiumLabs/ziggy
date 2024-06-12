@@ -21,7 +21,9 @@ if 'avx512f' in flags:
     cxx_flags.append('-mavx512f')
 
 # select CPU or CUDA build
-if 'CUDA_HOME' in os.environ:
+cpu_only = os.environ.get('ZIGGY_CPU_ONLY', '').lower() in ('1', 'true', 'yes')
+has_cuda = 'CUDA_HOME' in os.environ
+if not cpu_only and has_cuda:
     Extension = CUDAExtension
     sources = ['extension_cuda.cpp', 'matmul_quant_cpu.cpp', 'matmul_quant_cuda.cu']
 
@@ -30,6 +32,9 @@ if 'CUDA_HOME' in os.environ:
         cudahostcxx = os.environ['CUDAHOSTCXX']
         extra_compile_args['nvcc'] = [f'--compiler-bindir={cudahostcxx}']
 else:
+    if has_cuda:
+        print('WARNING: Environment variable CUDA_HOME not found, building in CPU-only mode.')
+
     Extension = CppExtension
     sources = ['extension_cpu.cpp', 'matmul_quant_cpu.cpp']
 

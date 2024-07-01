@@ -114,15 +114,17 @@ class IndexDict(dict):
     def idx(self, keys):
         return [self[k] for k in keys]
 
+# this stores the value three times for: getting, set ops, and indexing
+# there's probably a better way, but this is fine for now, not a huge bottleneck
+# NOTE: this will not work with removal!
 class OrderedSet(list):
     def __init__(self, data=None):
         data = [] if data is None else data
         super().__init__(data)
         self._set = set(data)
         self._idx = {k: i for i, k in enumerate(data)}
-
-        if len(self._set) != len(data):
-            raise ValueError('Trying to add duplicate keys')
+        if len(self) != len(self._set):
+            raise ValueError('Trying to create with duplicate keys')
 
     @classmethod
     def load(cls, data):
@@ -146,14 +148,7 @@ class OrderedSet(list):
 
         # update set values
         self._set.update(keys)
-
-        # update index values
-        base = len(self)
-        self._idx.update({
-            k: base + i for i, k in enumerate(keys)
-        })
-
-        # update list values
+        self._idx.update({k: i for i, k in enumerate(keys, len(self))})
         super().extend(keys)
 
 ##

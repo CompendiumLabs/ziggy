@@ -9,6 +9,7 @@ For simple usage, no additional steps are needed beyond cloning the repository. 
 cd extension
 python setup.py install --user
 ```
+For CUDA builds, the environment variable `CUDA_HOME` must be set to your CUDA directory. To build in CPU-only mode, set the environment variable `ZIGGY_CPU_ONLY=1`.
 
 *If you need to use an older C++ compiler with `nvcc`, set `CUDAHOSTCXX` to the directory containing the `c++` binary.*
 

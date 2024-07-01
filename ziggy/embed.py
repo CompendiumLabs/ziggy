@@ -475,6 +475,9 @@ class LlamaCppEmbedding:
 
         return embeds
 
+    def __call__(self, *args, **kwargs):
+        return self.embed(*args, **kwargs)
+
 ##
 ## OpenAI
 ##

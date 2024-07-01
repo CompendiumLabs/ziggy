@@ -7,7 +7,7 @@ build-backend = 'setuptools.build_meta'
 [project]
 name = 'ziggy'
 version = '0.8'
-description = 'LLM text generation and vector database.'
+description = 'Embeddings and vector database.'
 readme = { file = 'README.md' , content-type = 'text/markdown' }
 authors = [{ name = 'Doug Hanley', email = 'thesecretaryofwar@gmail.com' }]
 license = { text = 'MIT' }

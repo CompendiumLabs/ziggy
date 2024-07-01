@@ -343,8 +343,11 @@ def pack_batches(sizes, max_len):
     return batches
 
 class LlamaCppEmbedding:
-    def __init__(self, model_path, max_len=512, pooling_type=None, device='cuda', dtype=None, verbose=False, **kwargs):
-        from llama_cpp import Llama, llama_pooling_type, LLAMA_POOLING_TYPE_UNSPECIFIED
+    def __init__(
+        self, model_path, max_len=512, pooling_type=None, causal_attn=None,
+        device='cuda', dtype=None, verbose=False, **kwargs
+    ):
+        from llama_cpp import Llama, llama_set_causal_attn, llama_pooling_type, LLAMA_POOLING_TYPE_UNSPECIFIED
 
         # set up device
         ngl = 0 if device == 'cpu' else 99
@@ -362,6 +365,10 @@ class LlamaCppEmbedding:
             model_path, embedding=True, n_batch=max_len, n_ctx=max_len,
             pooling_type=pooling_type, n_gpu_layers=ngl, verbose=verbose
         )
+
+        # optionally set attention type
+        if causal_attn is not None:
+            llama_set_causal_attn(self.model.ctx, causal_attn)
 
         # get metadata
         self.name = os.path.basename(model_path)

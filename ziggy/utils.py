@@ -119,6 +119,10 @@ class OrderedSet(list):
         data = [] if data is None else data
         super().__init__(data)
         self._set = set(data)
+        self._idx = {k: i for i, k in enumerate(data)}
+
+        if len(self._set) != len(data):
+            raise ValueError('Trying to add duplicate keys')
 
     @classmethod
     def load(cls, data):
@@ -133,10 +137,23 @@ class OrderedSet(list):
     def intersection(self, keys):
         return self._set.intersection(keys)
 
+    def index(self, key):
+        return self._idx.get(key, -1)
+
     def extend(self, keys):
         if not self.isdisjoint(keys):
             raise ValueError('Trying to add existing keys')
+
+        # update set values
         self._set.update(keys)
+
+        # update index values
+        base = len(self)
+        self._idx.update({
+            k: base + i for i, k in enumerate(keys)
+        })
+
+        # update list values
         super().extend(keys)
 
 ##

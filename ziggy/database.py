@@ -109,7 +109,7 @@ class TextDatabase:
         return self
 
     @classmethod
-    def from_batches(cls, iterable, progress=False, threaded=True, truncate=False, **kwargs):
+    def from_batches(cls, iterable, progress=True, threaded=True, truncate=False, **kwargs):
         self = cls(**kwargs)
         n_total = 0
         for i, batch in enumerate(iterable):

@@ -83,11 +83,11 @@ class TextDatabase:
         ):
         # store embedding model
         self.embed = embed
-        self.dims = self.embed.dims if dims is None else dims
 
         # initalize index
         if allocate:
             self.text = {}
+            self.dims = self.embed.dims if dims is None else dims
             self.index = TorchVectorIndex(self.dims, device=device, qspec=qspec, **kwargs)
 
     @classmethod

@@ -157,7 +157,7 @@ class TorchVectorIndex:
     def idx(self, indices):
         # convert to tensor if needed
         indices = [indices] if type(indices) is int else indices
-        indices = torch.tensor(indices, device=self.device, dtype=torch.int32)
+        indices = torch.as_tensor(indices, device=self.device, dtype=torch.int32)
 
         # handle negative indices
         size = len(self)

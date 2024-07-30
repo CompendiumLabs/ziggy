@@ -82,11 +82,22 @@ def compile_onnx(model, save_dir, device, trust_remote_code=False):
 ## Embeddings
 ##
 
+def get_hf_file(repo_id, filename):
+    repo_path = Path(repo_id)
+    if repo_path.is_dir():
+        file_path = repo_path / filename
+        if not file_path.exists():
+            return
+    else:
+        try:
+            file_path = hub.hf_hub_download(repo_id, filename=filename)
+        except EntryNotFoundError:
+            return
+    return file_path
+
 def detect_pooling_type(repo_id):
-    # get modules file
-    try:
-        mod_path = hub.hf_hub_download(repo_id, filename='modules.json')
-    except EntryNotFoundError:
+    # get model modules
+    if (mod_path := get_hf_file(repo_id, 'modules.json')) is None:
         return
     with open(mod_path) as f:
         mod_data = json.load(f)
@@ -101,9 +112,7 @@ def detect_pooling_type(repo_id):
         return
 
     # get pooling layer conf
-    try:
-        pool_path = hub.hf_hub_download(repo_id, filename=f'{pool_rel}/config.json')
-    except EntryNotFoundError:
+    if (pool_path := get_hf_file(repo_id, f'{pool_rel}/config.json')) is None:
         return
     with open(pool_path) as f:
         pool_data = json.load(f)
@@ -122,9 +131,8 @@ def detect_pooling_type(repo_id):
 
 class HuggingfaceEmbedding:
     def __init__(
-        self, model_id, tokenize_id=None, max_len=None, batch_size=128,
-        queue_size=256, device='cuda', dtype=None, onnx=None, save_dir=None, compile=False,
-        pooling_type=None, trust_remote_code=False
+        self, model_id, tokenize_id=None, max_len=None, batch_size=128, queue_size=256, device='cuda',
+        dtype=None, onnx=None, save_dir=None, compile=False, pooling_type=None, trust_remote_code=False
     ):
         # get env config
         ONNX_DIR = os.environ.get('ZIGGY_ONNX_DIR', 'onnx')
@@ -285,6 +293,9 @@ class HuggingfaceEmbedding:
 
         # return normalized vectors
         return embed
+
+    def __call__(self, *args, **kwargs):
+        return self.embed(*args, **kwargs)
 
 ##
 ## llama.cpp

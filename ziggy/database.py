@@ -154,7 +154,7 @@ class TextDatabase:
         return len(self.text)
 
     def embed_text(self, text, threaded=True):
-        return self.embed.embed(text, threaded=threaded).squeeze()
+        return self.embed(text, threaded=threaded).squeeze()
 
     def index_text(self, labels, text):
         self.text.update(zip(labels, text))
@@ -173,7 +173,7 @@ class TextDatabase:
         labels, text = zip(*docs.items())
 
         # embed and index
-        vecs = self.embed.embed(text, **kwargs)
+        vecs = self.embed(text, **kwargs)
         self.index_text(labels, text)
         self.index_vecs(labels, vecs, groups=groups)
         return vecs

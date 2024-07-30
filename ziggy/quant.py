@@ -177,11 +177,10 @@ class QuantizedEmbedding:
 
     @classmethod
     def load(cls, data, device='cuda'):
-        size, dims = data['data'].size()
+        qdata = data['data']
+        size, dims = qdata.size()
         qspec = QuantSpec.load(data['qspec'])
-        if device == 'cpu' and qspec == Half:
-            qspec = Float # half precision not supported on CPU
-        return cls(size, dims, qspec=qspec, qdata=data['data'], device=device)
+        return cls(size, dims, qspec=qspec, qdata=qdata, device=device)
 
     def save(self):
         return {

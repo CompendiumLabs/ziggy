@@ -49,9 +49,9 @@ class TorchVectorIndex:
         return len(self.labels)
 
     def expand(self, size, power=False):
-        if power:
-            size = next_power_of_2(size)
         if size > len(self.values):
+            if power:
+                size = next_power_of_2(size)
             self.values.resize(size)
             resize_alloc(self.groups, size)
 

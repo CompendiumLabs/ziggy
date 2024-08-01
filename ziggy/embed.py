@@ -129,6 +129,12 @@ def detect_pooling_type(repo_id):
     elif pool_data['pooling_mode_mean_sqrt_len_tokens']:
         raise NotImplementedError('mean-sqrt-len pooling not supported')
 
+def device_info(device):
+    device_obj = torch.device(device)
+    device_typ = device_obj.type
+    device_idx = device_obj.index if device_obj.index is not None else 0
+    return device_typ, device_idx
+
 class HuggingfaceEmbedding:
     def __init__(
         self, model_id, tokenize_id=None, max_len=None, batch_size=128, queue_size=256, device='cuda',
@@ -161,9 +167,10 @@ class HuggingfaceEmbedding:
             self.tokenizer = AutoTokenizer.from_pretrained(model_path)
             self.model = ONNXEmbedding(model_path, device)
         else:
-            device_map = {'': 0} if device == 'cuda' else device
+            device_typ, device_idx = device_info(device)
+            device_map = {'': device_idx} if device_typ == 'cuda' else device_typ
             if dtype is None:
-                dtype = torch.float16 if device == 'cuda' else torch.float32
+                dtype = torch.float16 if device_typ == 'cuda' else torch.float32
             self.tokenizer = AutoTokenizer.from_pretrained(model_id)
             self.model = AutoModel.from_pretrained(
                 model_id, device_map=device_map, torch_dtype=dtype, trust_remote_code=trust_remote_code

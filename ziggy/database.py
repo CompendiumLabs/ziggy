@@ -78,8 +78,8 @@ def stream_csv(path, batch_size=1024, max_rows=None):
 # index — TorchVectorIndex {label: vec}
 class TextDatabase:
     def __init__(
-            self, embed=None, device='cuda', onnx=True,
-            allocate=True, dims=None, qspec=None, **kwargs
+            self, embed=None, device='cuda', qspec=None,
+            allocate=True, dims=None, **kwargs
         ):
         # store embedding model
         self.embed = embed

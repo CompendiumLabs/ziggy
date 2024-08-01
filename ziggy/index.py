@@ -29,7 +29,8 @@ class TorchVectorIndex:
             self.groups = torch.empty(size, device=self.device, dtype=torch.int32)
 
     @classmethod
-    def load(cls, data, device='cuda', **kwargs):
+    def load(cls, path, device='cuda', **kwargs):
+        data = torch.load(path, map_location=device) if type(path) is str else path
         self = cls(allocate=False, device=device, **kwargs)
         self.labels = OrderedSet.load(data['labels'])
         self.grpids = IndexDict.load(data['grpids'])
@@ -37,27 +38,33 @@ class TorchVectorIndex:
         self.groups = data['groups']
         return self
 
-    def save(self):
-        return {
+    def save(self, path=None):
+        data = {
             'labels': self.labels.save(),
             'grpids': self.grpids.save(),
             'values': self.values.save(),
             'groups': self.groups,
         }
+        if path is None:
+            return data
+        else:
+            torch.save(data, path)
 
     def __len__(self):
         return len(self.labels)
 
     def expand(self, size, power=False):
-        if size > len(self.values):
+        size0 = len(self.values)
+        if size > size0:
             if power:
                 size = next_power_of_2(size)
+            print(f'Expanding index: {size0} → {size}')
             self.values.resize(size)
             resize_alloc(self.groups, size)
 
     def add(self, labs, vecs, groups=None, strict=False):
         # allow for single vec
-        if type(labs) is not list and vecs.ndim == 1:
+        if not isinstance(labs, list) and vecs.ndim == 1:
             labs = [labs]
             vecs = vecs.unsqueeze(0)
 

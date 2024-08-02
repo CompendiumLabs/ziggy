@@ -144,7 +144,7 @@ def similarity_mean(
     path_sims, # output torch file
     path_vecs1=None, # comparison ziggy database
     batch_size=64, max_rows=None, demean=False,
-    device='cuda', device1='cuda',
+    device='cuda', device1='cuda', min_date='1970-01-01',
 ):
     # load vector index
     print('Loading base vector index')
@@ -172,7 +172,7 @@ def similarity_mean(
     # load merged patent data
     print('Loading patent metadata')
     pats = pd.read_csv(path_pats)
-    pats['appdate'] = pd.to_datetime(pats['appdate']).fillna(pd.Timestamp('1970-01-01'))
+    pats['appdate'] = pd.to_datetime(pats['appdate']).fillna(pd.Timestamp(min_date))
     print(f'Loaded {len(pats)} metadata')
 
     # get application year for patents

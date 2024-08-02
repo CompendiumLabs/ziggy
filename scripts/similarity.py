@@ -34,8 +34,10 @@ def merge_indices(paths, output, dims, size=1024, qspec=Half):
         del index1
     index.save(output)
 
-def extract_index(path, output):
+def extract_index(path, output, trim=True):
     db = TextDatabase.load(path, device='cpu')
+    if trim:
+        db.index.values.data = db.index.values.data[:len(db.index),:].clone()
     db.index.save(output)
 
 # demean and renormalize vectors

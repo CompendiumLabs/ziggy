@@ -1,5 +1,17 @@
 # patent runner script
 
+##
+## lambda labs bootup
+##
+
+# upgrade python packages
+# pip install -U torch transformers accelerate bitsandbytes nvitop
+
+# install ziggy
+# git clone https://github.com/CompendiumLabs/ziggy
+# cd ziggy
+# pip install -e .
+
 # split files command
 # split -d -a 1 --additional-suffix=.jsonl -l 2170000 ../patents_zh.jsonl patents_zh_
 

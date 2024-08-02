@@ -50,7 +50,7 @@ def load_database(path, device='cuda'):
     data = torch.load(path, map_location=device)
     if 'index' in data:
         data = data['index']
-    return TorchVectorIndex.load(data)
+    return TorchVectorIndex.load(data, device=device)
 
 # merge patent metadata with ziggy database
 def merge_patents(

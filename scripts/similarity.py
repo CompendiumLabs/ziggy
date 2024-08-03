@@ -158,6 +158,7 @@ def similarity_mean(
         index1 = load_database(path_vecs1, device=device1)
     else:
         index1 = index
+    n_pats1 = len(index1)
 
     # demean vectors is requested
     if demean:
@@ -195,7 +196,7 @@ def similarity_mean(
         # compute similarities for batch
         vecs = index.values.data[i1:i2].to(device=device1) # [B, D]
         # sims = index1.similarity(vecs) # [B, N1] - this is slow
-        sims = (index1.values.data[:n_pats,:] @ vecs.T).T # [B, N1]
+        sims = (index1.values.data[:n_pats1,:] @ vecs.T).T # [B, N1]
 
         # generate offsets
         batch_vec = torch.arange(n_batch, device='cuda')

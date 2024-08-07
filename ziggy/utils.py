@@ -5,6 +5,7 @@ from itertools import chain, islice, accumulate, groupby
 from operator import itemgetter
 from threading import Thread, Event
 from queue import Queue, Empty
+from pathlib import Path
 import time
 
 ##
@@ -202,6 +203,13 @@ class RequestTracker:
 
 def resize_alloc(a, size):
     a.resize_(size, *a.shape[1:])
+
+def load_torch(path_or_data, device):
+    import torch
+    if isinstance(path_or_data, (str, Path)):
+        return torch.load(path_or_data, map_location=device, weights_only=True)
+    else:
+        return path_or_data
 
 ##
 ## thread rig

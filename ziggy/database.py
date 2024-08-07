@@ -16,7 +16,7 @@ from torch.nn.functional import normalize
 from .embed import HuggingfaceEmbedding
 from .index import TorchVectorIndex
 from .quant import Float
-from .utils import batch_generator, cumul_indices, list_splitter, groupby_idx
+from .utils import batch_generator, cumul_indices, list_splitter, groupby_idx, load_torch
 
 ##
 ## Utils
@@ -92,7 +92,7 @@ class TextDatabase:
 
     @classmethod
     def load(cls, path, embed=None, device='cuda', warn_embed=True, **kwargs):
-        data = torch.load(path, map_location=device) if type(path) is str else path
+        data = load_torch(path, device)
 
         # check embedding compatibility
         embed_orig = data.get('embed', None)
@@ -196,12 +196,12 @@ class TextDatabase:
         return self.index.get(labels)
 
     def similarity(self, query, groups=None, return_labels=False):
-        if type(query) is str:
+        if isinstance(query, str):
             query = self.embed_text(query)
         return self.index.similarity(query, groups=groups, return_labels=return_labels)
 
     def search(self, query, groups=None, top_k=10, cutoff=-torch.inf, return_simil=False):
-        if type(query) is str:
+        if isinstance(query, str):
             query = self.embed_text(query)
         labs, sims = self.index.search(query, top_k=top_k, groups=groups)
         match = [(l, v) for l, v in zip(labs, sims.tolist()) if v > cutoff]
@@ -257,7 +257,7 @@ class DocumentDatabase(TextDatabase):
 
     @classmethod
     def load(cls, path, embed=None, device='cuda', **kwargs):
-        data = torch.load(path, map_location=device) if type(path) is str else path
+        data = load_torch(path, device)
         self = super().load(data, embed=embed, device=device, **kwargs)
         self.dindex = TorchVectorIndex.load(data['dindex'], device=device)
         return self
@@ -315,12 +315,12 @@ class DocumentDatabase(TextDatabase):
 
     def search_docs(self, query, top_k=25, return_simil=False):
         if type(query) is str:
-            query = self.embed.embed(query).squeeze()
+            query = self.embed(query).squeeze()
         return self.dindex.search(query, top_k, return_simil=return_simil)
 
     def search_chunks(self, query, top_d=None, return_simil=False):
         if type(query) is str:
-            query = self.embed.embed(query).squeeze()
+            query = self.embed(query).squeeze()
         if top_d is None:
             docs = None
         else:

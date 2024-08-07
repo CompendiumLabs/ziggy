@@ -3,7 +3,7 @@
 import torch
 
 from .quant import QuantizedEmbedding, Float, Half
-from .utils import IndexDict, OrderedSet, resize_alloc, next_power_of_2
+from .utils import IndexDict, OrderedSet, resize_alloc, next_power_of_2, load_torch
 
 ##
 ## Pure Torch
@@ -30,7 +30,7 @@ class TorchVectorIndex:
 
     @classmethod
     def load(cls, path, device='cuda', **kwargs):
-        data = torch.load(path, map_location=device) if type(path) is str else path
+        data = load_torch(path, device)
         self = cls(allocate=False, device=device, **kwargs)
         self.labels = OrderedSet.load(data['labels'])
         self.grpids = IndexDict.load(data['grpids'])

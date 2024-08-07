@@ -2,6 +2,7 @@
 
 import torch
 import pandas as pd
+from pathlib import Path
 from glob import glob
 from ziggy import TextDatabase, TorchVectorIndex
 from ziggy.quant import Half
@@ -47,7 +48,7 @@ def demean_inplace(x):
 
 # load ziggy TorchVectorIndex directly or from TextDatabase
 def load_database(path, device='cuda'):
-    data = torch.load(path, map_location=device)
+    data = torch.load(path, map_location=device, weights_only=True)
     if 'index' in data:
         data = data['index']
     return TorchVectorIndex.load(data, device=device)
@@ -141,10 +142,10 @@ def similarity_topk(
 def similarity_mean(
     path_vecs, # ziggy database
     path_pats, # patent metadata csv (for comparison!)
-    path_sims, # output torch file
+    path_sims=None, # output torch file
     path_vecs1=None, # comparison ziggy database
-    batch_size=64, max_rows=None, demean=False,
-    device='cuda', device1='cuda', min_date='1970-01-01',
+    batch_size=8, max_rows=None, demean=False,
+    device='cuda', device1='cuda', min_year=1970,
 ):
     # load vector index
     print('Loading base vector index')
@@ -173,20 +174,22 @@ def similarity_mean(
     # load merged patent data
     print('Loading patent metadata')
     pats = pd.read_csv(path_pats)
-    pats['appdate'] = pd.to_datetime(pats['appdate']).fillna(pd.Timestamp(min_date))
+    min_date = pd.Timestamp(f'{min_year}-01-01')
+    pats['appdate'] = pd.to_datetime(pats['appdate']).fillna(min_date)
     print(f'Loaded {len(pats)} metadata')
 
     # get application year for patents
-    app_year = torch.tensor(pats['appdate'].dt.year, dtype=torch.int32, device='cuda')
-    year_min, year_max = app_year.min(), app_year.max()
+    app_year = torch.tensor(pats['appdate'].dt.year, dtype=torch.int32, device=device1)
+    year_min, year_max = min_year, app_year.max().item()
     year_idx = app_year - year_min
 
     # get application year statistics
     n_years = year_max - year_min + 1
     c_years = torch.bincount(year_idx, minlength=n_years)
+    y_years = torch.arange(year_min, year_max + 1, device=device1)
 
     # create output tensors
-    avgt = torch.zeros((n_pats, n_years), dtype=torch.float16, device='cuda')
+    avgt = torch.zeros((n_pats, n_years), dtype=torch.float16, device=device1)
 
     # generate similarity metrics
     for i1, i2 in batch_indices(n_pats, batch_size):
@@ -195,21 +198,80 @@ def similarity_mean(
 
         # compute similarities for batch
         vecs = index.values.data[i1:i2].to(device=device1) # [B, D]
-        # sims = index1.similarity(vecs) # [B, N1] - this is slow
-        sims = (index1.values.data[:n_pats1,:] @ vecs.T).T # [B, N1]
+        # sims = index1.similarity(vecs).T # [N1, B] - this is slow
+        sims = index1.values.data[:n_pats1,:] @ vecs.T # [N1, B]
 
         # generate offsets
-        batch_vec = torch.arange(n_batch, device='cuda')
-        offsets = batch_vec[:,None] * n_years + year_idx[None,:]
+        batch_vec = torch.arange(n_batch, device=device1)
+        offsets = year_idx[:,None] * n_batch + batch_vec[None,:]
 
         # group sum by application year
-        sums = torch.bincount(offsets.ravel(), weights=sims.ravel(), minlength=n_batch*n_years)
-        avgt[i1:i2] = sums.reshape(n_batch, n_years) / c_years[None,:]
+        sums = torch.bincount(offsets.view(-1), weights=sims.view(-1), minlength=n_years*n_batch)
+        avgt[i1:i2] = sums.reshape(n_years, n_batch).T / c_years[None,:]
 
-    # save to disk
-    torch.save({
-        'year_sim'  : avgt    ,
-        'year_count': c_years ,
-        'year_min'  : year_min,
-        'year_max'  : year_max,
-    }, path_sims)
+    # return results
+    res = {
+        'year_sims': avgt   ,
+        'year_nums': c_years,
+        'year_inds': y_years,
+    }
+    if path_sims is not None:
+        torch.save(res, path_sims)
+    else:
+        return res
+
+# compute patent novelty metric
+def patent_novelty(sim_data, meta_data, delta=5, device='cuda', year_cut=torch.inf):
+    # load if needed
+    if isinstance(sim_data, (str, Path)):
+        sim_data = torch.load(sim_data, weights_only=True)
+    if isinstance(meta_data, (str, Path)):
+        meta_data = pd.read_csv(meta_data)
+
+    # load similarity data
+    year_sim = sim_data['year_sim'].to(dtype=torch.float, device=device)
+    year_count = sim_data['year_count'].to(dtype=torch.float, device=device)
+    year_min = sim_data['year_min']
+    year_max = sim_data['year_max']
+
+    # get data size
+    n_pats, n_years = year_sim.shape
+
+    # load patent metadata
+    min_str = f'{year_min}-01-01'
+    pat_date = pd.to_datetime(meta_data['appdate'].fillna(min_str))
+    app_year = torch.tensor(pat_date.dt.year, dtype=torch.int64, device=device)
+    year_idx = app_year - year_min
+
+    # get pre counts
+    count_pre = torch.zeros(n_pats, device=device)
+    simil_pre = torch.zeros(n_pats, device=device)
+    for i in range(delta):
+        idx = year_idx - i
+        sel = (idx >= 0) & (idx < n_years) & (app_year <= year_cut)
+
+        idx1 = torch.where(sel, idx, 0)
+        cnt1 = torch.where(sel, year_count[idx1], 0)
+        sim1 = torch.where(sel, year_sim.gather(1, idx1.unsqueeze(1)).squeeze(1), 0)
+
+        count_pre += cnt1
+        simil_pre += cnt1 * sim1
+    simil_pre /= count_pre
+
+    # get pos counts
+    count_pos = torch.zeros(n_pats, device=device)
+    simil_pos = torch.zeros(n_pats, device=device)
+    for i in range(1, delta + 1):
+        idx = year_idx + i
+        sel = (idx >= 0) & (idx < n_years) & (app_year <= year_cut)
+
+        idx1 = torch.where(sel, idx, 0)
+        cnt1 = torch.where(sel, year_count[idx1], 0)
+        sim1 = torch.where(sel, year_sim.gather(1, idx1.unsqueeze(1)).squeeze(1), 0)
+
+        count_pos += cnt1
+        simil_pos += cnt1 * sim1
+    simil_pos /= count_pos
+
+    # return similarities
+    return simil_pre, simil_pos

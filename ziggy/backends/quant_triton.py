@@ -172,7 +172,7 @@ def matmul_float_kernel(
     # create read/write masks
     mask_a = rn[:, None] < N
     mask_b = rm[None, :] < M
-    mask_c = (rn[:, None] < N) & (rm[None, :] < M)
+    mask_c = mask_a & mask_b
 
     # the memory addresses of first block elemenets
     A1 = A + (rn[:, None] * stride_an + rk[None, :] * stride_ak)
@@ -238,7 +238,7 @@ def matmul_quant_kernel(
     # create read/write masks
     mask_a = rn[:, None] < N
     mask_b = rm[None, :] < M
-    mask_c = (rn[:, None] < N) & (rm[None, :] < M)
+    mask_c = mask_a & mask_b
 
     # the memory addresses of first block elemenets
     A1 = A + (rn[:, None] * stride_an + rk1[None, :] * stride_ak)

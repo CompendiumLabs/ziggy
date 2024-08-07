@@ -24,6 +24,13 @@ class QuantType(Enum):
             return self.value == other.value
         return False
 
+    def save(self):
+        return self.name
+
+    @classmethod
+    def load(cls, data):
+        return cls[data]
+
 def is_quantized(qtype):
     return qtype in (QuantType.qint8, QuantType.qint4, QuantType.qint2, QuantType.qint1)
 
@@ -98,11 +105,13 @@ class QuantSpec:
 
     @classmethod
     def load(cls, data):
-        return cls(data['qtype'], scale=data['scale'], zero_point=data['zero_point'])
+        qtype = QuantType.load(data['qtype'])
+        scale, zero_point = data.get('scale'), data.get('zero_point')
+        return cls(qtype, scale=scale, zero_point=zero_point)
 
     def save(self):
         return {
-            'qtype': self.qtype,
+            'qtype': self.qtype.save(),
             'scale': self.scale,
             'zero_point': self.zero_point,
         }

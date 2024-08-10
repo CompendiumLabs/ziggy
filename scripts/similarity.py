@@ -240,7 +240,7 @@ def patent_novelty(sim_data, meta_data, delta=5, device='cuda', year_cut=torch.i
     # load patent metadata
     min_str = f'{year_min}-01-01'
     pat_date = pd.to_datetime(meta_data['appdate'].fillna(min_str))
-    app_year = torch.tensor(pat_date.dt.year, dtype=torch.int64, device=device)
+    app_year = torch.tensor(pat_date.dt.year.values, dtype=torch.int64, device=device)
     year_idx = app_year - year_min
 
     # get pre counts

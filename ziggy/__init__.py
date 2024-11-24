@@ -6,7 +6,7 @@ from . import database
 from . import bench
 from . import guffy
 
-from .quant import QuantType, QuantSpec
+from .quant import QuantType, QuantSpec, Half, Float, Binary
 from .index import TorchVectorIndex
 from .embed import HuggingfaceEmbedding, LlamaCppEmbedding, OpenAIEmbedding
 from .database import TextDatabase, DocumentDatabase, FilesystemDatabase

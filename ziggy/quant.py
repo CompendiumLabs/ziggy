@@ -191,6 +191,13 @@ class QuantizedEmbedding:
         qspec = QuantSpec.load(data['qspec'])
         return cls(size, dims, qspec=qspec, qdata=qdata, device=device)
 
+    @classmethod
+    def convert(cls, other, qspec=None, size=None, device=None):
+        qspec = qspec if qspec is not None else other.qspec
+        size = size if size is not None else other.data.size(0)
+        device = device if device is not None else other.device
+        return cls(size, other.dims, qspec=qspec, device=device, data=other.data)
+
     def save(self):
         return {
             'qspec': self.qspec.save(),

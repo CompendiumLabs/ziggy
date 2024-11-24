@@ -213,8 +213,8 @@ class HuggingfaceEmbedding:
 
         # detect input arguments
         fwd_args = dict(input_ids=input_ids, attention_mask=attention_mask)
-        if 'token_type_ids' in self.model.forward.__func__.__code__.co_names:
-            fwd_args['token_type_ids'] = torch.zeros(input_ids.shape, dtype=torch.int64, device=self.device)
+        # if 'token_type_ids' in self.model.forward.__func__.__code__.co_names:
+        fwd_args['token_type_ids'] = torch.zeros(input_ids.shape, dtype=torch.int64, device=self.device)
 
         # get model output
         with torch.no_grad():

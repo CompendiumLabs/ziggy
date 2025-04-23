@@ -137,7 +137,7 @@ def device_info(device):
 
 class HuggingfaceEmbedding:
     def __init__(
-        self, model_id, tokenize_id=None, max_len=None, batch_size=128, queue_size=256, device='cuda',
+        self, model_id, max_len=None, batch_size=128, queue_size=256, device='cuda',
         dtype=None, onnx=None, save_dir=None, compile=False, pooling_type=None, trust_remote_code=False
     ):
         # get env config

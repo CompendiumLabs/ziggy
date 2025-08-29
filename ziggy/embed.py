@@ -19,6 +19,16 @@ from .utils import (
 )
 
 ##
+## utils
+##
+
+def default_dtype(device, dtype=None):
+    if dtype is None:
+        return torch.float16 if device == 'cuda' else torch.float32
+    else:
+        return dtype
+
+##
 ## ONNX Wrapper
 ##
 
@@ -169,8 +179,7 @@ class HuggingfaceEmbedding:
         else:
             device_typ, device_idx = device_info(device)
             device_map = {'': device_idx} if device_typ == 'cuda' else device_typ
-            if dtype is None:
-                dtype = torch.float16 if device_typ == 'cuda' else torch.float32
+            dtype = default_dtype(device_typ, dtype)
             self.tokenizer = AutoTokenizer.from_pretrained(model_id)
             self.model = AutoModel.from_pretrained(
                 model_id, device_map=device_map, torch_dtype=dtype, trust_remote_code=trust_remote_code
@@ -305,7 +314,7 @@ class HuggingfaceEmbedding:
         return self.embed(*args, **kwargs)
 
 ##
-## llama.cpp
+## batch packing
 ##
 
 # = defaultdict(list)
@@ -360,98 +369,34 @@ def pack_batches(sizes, max_len):
 
     return batches
 
-class LlamaCppEmbedding:
-    def __init__(
-        self, model_path, max_len=512, pooling_type=None, causal_attn=None,
-        device='cuda', dtype=None, verbose=False, **kwargs
-    ):
-        from llama_cpp import Llama, llama_set_causal_attn, llama_pooling_type, LLAMA_POOLING_TYPE_UNSPECIFIED
-
-        # set up device
-        ngl = 0 if device == 'cpu' else 99
+# expects: tokenize_batch, decode_batch, batch_size, device, dtype, dims
+class BatchPackMixin:
+    def __init__(self, batch_size, dims, device='cuda', dtype=None, tokenize_single=False, **kwargs):
+        self.batch_size = batch_size
+        self.dims = dims
         self.device = device
+        self.dtype = default_dtype(device, dtype)
+        self.tokenize_single = tokenize_single
+        self.kwargs = kwargs
 
-        # set up dtype
-        dtype0 = torch.float16 if device == 'cuda' else torch.float32
-        self.dtype = dtype0 if dtype is None else dtype
-
-        # get pooling type
-        pooling_type = LLAMA_POOLING_TYPE_UNSPECIFIED if pooling_type is None else pooling_type
-
-        # load model
-        self.model = Llama(
-            model_path, embedding=True, n_batch=max_len, n_ctx=max_len,
-            pooling_type=pooling_type, n_gpu_layers=ngl, verbose=verbose
-        )
-
-        # optionally set attention type
-        if causal_attn is not None:
-            llama_set_causal_attn(self.model.ctx, causal_attn)
-
-        # get metadata
-        self.name = os.path.basename(model_path)
-        self.max_len = max_len
-        self.pooling_type = llama_pooling_type(self.model._ctx.ctx)
-        self.dims = self.model.n_embd()
-
-    def tokenize(self, text, special=False):
+    def tokenize(self, text, special=True):
         if type(text) is str:
             text = [text]
             squeeze = True
         else:
             squeeze = False
-        ids = [
-            self.model.tokenize(s.encode('utf-8'), special=special)
-            for s in text
-        ]
-        return ids[0] if squeeze else ids
-
-    def forward_batch(self, tokens):
-        from llama_cpp import (
-            llama_kv_cache_clear, llama_get_embeddings, llama_get_embeddings_seq,
-            LLAMA_POOLING_TYPE_NONE
-        )
-
-        ctx = self.model._ctx
-        n_seq = len(tokens)
-        n_embd = self.model.n_embd()
-
-        # check total batch size
-        n_toks = [len(toks) for toks in tokens]
-        assert sum(n_toks) <= self.max_len
-
-        # add tokens to batch
-        self.model._batch.reset()
-        for seq_id, toks in enumerate(tokens):
-            self.model._batch.add_sequence(toks, seq_id, False)
-
-        # run model on batch
-        llama_kv_cache_clear(ctx.ctx)
-        ctx.decode(self.model._batch)
-
-        # store embeddings
-        if self.pooling_type == LLAMA_POOLING_TYPE_NONE:
-            embeds_ptr = llama_get_embeddings(ctx.ctx)
-            embeds = [
-                [embeds_ptr[k*n_embd:(k+1)*n_embd] for k in range(i, j)]
-                for i, j in cumul_bounds(n_toks)
+        if self.tokenize_single:
+            ids = [
+                self.tokenize_batch(s, special=special) for s in text
             ]
         else:
-            embeds = [
-                llama_get_embeddings_seq(ctx.ctx, i)[:n_embd]
-                for i in range(n_seq)
-            ]
+            ids = self.tokenize_batch(text, special=special)
+        return ids[0] if squeeze else ids
 
-        # return as lists
-        return embeds
-
-    def forward(self, tokens):
-        from llama_cpp import LLAMA_POOLING_TYPE_NONE
-        assert self.pooling_type != LLAMA_POOLING_TYPE_NONE
-
+    def decode(self, tokens):
         # plan batch contents
         sizes = [len(toks) for toks in tokens]
-        batches = pack_batches(sizes, self.max_len)
+        batches = pack_batches(sizes, self.batch_size)
 
         # allocate output tensor
         embeds = torch.empty(len(tokens), self.dims, device=self.device, dtype=self.dtype)
@@ -459,12 +404,12 @@ class LlamaCppEmbedding:
         # compute embeddings
         for idxs in batches:
             toks = [tokens[i] for i in idxs]
-            embs = self.forward_batch(toks)
+            embs = self.decode_batch(toks)
             embeds[idxs] = torch.tensor(embs, device=self.device, dtype=self.dtype)
 
         return embeds
 
-    def embed(self, text, threaded=None, truncate=False, normalize=True, special=False):
+    def embed(self, text, threaded=None, truncate=False, normalize=True, special=True):
         if type(text) is str:
             text = [text]
 
@@ -473,13 +418,13 @@ class LlamaCppEmbedding:
 
         # handle truncation
         if truncate:
-            chunks = [t[:self.max_len] for t in tokens]
+            chunks = [t[:self.batch_size] for t in tokens]
         else:
-            splits = [ceil(len(t) / self.max_len) for t in tokens]
-            chunks = list(chain.from_iterable((list_splitter(t, self.max_len) for t in tokens)))
+            splits = [ceil(len(t) / self.batch_size) for t in tokens]
+            chunks = list(chain.from_iterable((list_splitter(t, self.batch_size) for t in tokens)))
 
         # run forward compute
-        embeds = self.forward(chunks)
+        embeds = self.decode(chunks)
 
         # return normalized vectors
         if normalize:
@@ -495,6 +440,122 @@ class LlamaCppEmbedding:
 
     def __call__(self, *args, **kwargs):
         return self.embed(*args, **kwargs)
+
+##
+## llama.cpp
+##
+
+class LlamaCppEmbedding(BatchPackMixin):
+    def __init__(
+        self, model_path, batch_size=512, pooling_type=None, device='cuda', dtype=None, verbose=False, **kwargs
+    ):
+        from llama_cpp import Llama, LLAMA_POOLING_TYPE_UNSPECIFIED
+        pooling_type = LLAMA_POOLING_TYPE_UNSPECIFIED if pooling_type is None else pooling_type
+
+        # set up device/dtype
+        self.device = device
+        self.dtype = default_dtype(device, dtype)
+        ngl = 0 if device == 'cpu' else -1
+
+        # load model
+        self.model = Llama(
+            model_path, embedding=True, n_batch=batch_size, n_ubatch=batch_size, n_ctx=batch_size,
+            pooling_type=pooling_type, n_gpu_layers=ngl, verbose=verbose, **kwargs
+        )
+
+        # get metadata
+        self.name = os.path.basename(model_path)
+        self.batch_size = batch_size
+        self.dims = self.model.n_embd()
+
+    def tokenize_batch(self, text, special=True):
+        return [
+            self.model.tokenize(s.encode('utf-8'), special=special)
+            for s in text
+        ]
+
+    def decode_batch(self, tokens):
+        from llama_cpp import llama_kv_self_clear, llama_get_embeddings_seq
+
+        ctx = self.model._ctx
+        n_seq = len(tokens)
+        n_embd = self.model.n_embd()
+
+        # check total batch size
+        n_toks = [len(toks) for toks in tokens]
+        assert sum(n_toks) <= self.batch_size
+
+        # add tokens to batch
+        self.model._batch.reset()
+        for seq_id, toks in enumerate(tokens):
+            self.model._batch.add_sequence(toks, seq_id, False)
+
+        # run model on batch
+        llama_kv_self_clear(ctx.ctx)
+        ctx.decode(self.model._batch)
+
+        # store embeddings
+        embeds = [
+            llama_get_embeddings_seq(ctx.ctx, i)[:n_embd]
+            for i in range(n_seq)
+        ]
+
+        # return as lists
+        return embeds
+
+##
+## vllm wrapper
+##
+
+class VllmEmbedding(BatchPackMixin):
+    def __init__(self, model, batch_size=512, **kwargs):
+        super().__init__(batch_size=batch_size, dims=None, **kwargs)
+
+        # store vllm import
+        import vllm
+        self.vllm = vllm
+
+        # load vllm model
+        self.model = vllm.LLM(model, task='embed', enforce_eager=True, gpu_memory_utilization=0.5)
+        self.tokenizer = self.model.get_tokenizer()
+
+        # get model dims
+        test = self.model.embed('hello world')
+        self.dims = len(test[0].outputs.embedding)
+
+    def tokenize_batch(self, text, special=True):
+        return [
+            self.tokenizer.encode(s, add_special_tokens=special) for s in text
+        ]
+
+    def decode_batch(self, tokens):
+        inputs = [
+            self.vllm.inputs.TokensPrompt(prompt_token_ids=toks) for toks in tokens
+        ]
+        results = self.model.embed(inputs)
+        return [r.outputs.embedding for r in results]
+
+##
+## oneping wrapper
+##
+
+class OnepingEmbedding(BatchPackMixin):
+    def __init__(self, **kwargs):
+        super().__init__(dims=None, **kwargs)
+
+        # store oneping import
+        import oneping
+        self.oneping = oneping
+
+        # get model dims
+        test = self.oneping.embed('hello world', **self.kwargs)
+        self.dims = len(test)
+
+    def tokenize_batch(self, text, special=False):
+        return self.oneping.tokenize(text, **self.kwargs)
+
+    def decode_batch(self, tokens):
+        return self.oneping.embed(tokens, **self.kwargs)
 
 ##
 ## OpenAI

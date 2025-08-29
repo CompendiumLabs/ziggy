@@ -8,11 +8,10 @@ from subprocess import run
 from glob import glob
 
 import torch
-from torch.nn.functional import normalize as norm
 
 from .embed import HuggingfaceEmbedding, LlamaCppEmbedding
-from .database import stream_jsonl, text_splitter
-from .quant import Half, Float, QuantType
+from .database import stream_jsonl
+from .quant import Half
 
 TASKS_CQAD = [
     'CQADupstackAndroidRetrieval', 'CQADupstackEnglishRetrieval', 'CQADupstackGamingRetrieval', 'CQADupstackGisRetrieval',
@@ -52,8 +51,8 @@ def load_data(path, max_rows=None):
     return data
 
 def profile_embed(
-        model, path, cpu=False, max_len=512, delim='\n', min_len=100, max_rows=None,
-        onnx=True, truncate=True, threaded=True, n_threads=None, verbose=False
+        model, path, cpu=False, max_len=512, max_rows=None, onnx=True, truncate=True, threaded=True,
+        n_threads=None, verbose=False
     ):
     emb = load_model(model, cpu=cpu, onnx=onnx, max_len=max_len, n_threads=n_threads, verbose=verbose)
 
@@ -88,10 +87,7 @@ def profile_embed(
     print(f'Speed: {speed:.2f} chunks/second')
     print(f'Memory: {mem}')
 
-def profile_tokenizer(
-        model, path, cpu=False, max_len=512, delim='\n', min_len=100, max_rows=None,
-        onnx=True, truncate=True, threaded=True, n_threads=None, verbose=False
-):
+def profile_tokenizer(model, path, cpu=False, max_len=512, max_rows=None, onnx=True, n_threads=None, verbose=False):
     emb = load_model(model, cpu=cpu, onnx=onnx, max_len=max_len, n_threads=n_threads, verbose=verbose)
 
     # load data

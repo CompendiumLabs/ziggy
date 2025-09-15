@@ -7,6 +7,7 @@ from math import ceil
 from itertools import chain
 from collections import defaultdict
 from pathlib import Path
+import time
 
 import torch
 from torch.nn.functional import normalize as norm
@@ -522,6 +523,7 @@ class VllmEmbedding(BatchPackMixin):
         # get model dims
         test = self.model.embed('hello world')
         self.dims = len(test[0].outputs.embedding)
+        self.name = model
 
     def tokenize_batch(self, text, special=True):
         return [
@@ -539,8 +541,20 @@ class VllmEmbedding(BatchPackMixin):
 ## oneping wrapper
 ##
 
+ONEPING_TIMEOUT = 5
+def retry_with_timeout(func):
+    def wrapper(*args, **kwargs):
+        while True:
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                print(f'{e}: retrying in {ONEPING_TIMEOUT} seconds')
+                time.sleep(ONEPING_TIMEOUT)
+                continue
+    return wrapper
+
 class OnepingEmbedding(BatchPackMixin):
-    def __init__(self, **kwargs):
+    def __init__(self, name=None, **kwargs):
         super().__init__(dims=None, **kwargs)
 
         # store oneping import
@@ -548,12 +562,15 @@ class OnepingEmbedding(BatchPackMixin):
         self.oneping = oneping
 
         # get model dims
-        test = self.oneping.embed('hello world', **self.kwargs)
+        test, = self.oneping.embed('hello world', **self.kwargs)
         self.dims = len(test)
+        self.name = name if name is not None else 'unknown'
 
-    def tokenize_batch(self, text, special=False):
+    @retry_with_timeout
+    def tokenize_batch(self, text, special=True):
         return self.oneping.tokenize(text, **self.kwargs)
 
+    @retry_with_timeout
     def decode_batch(self, tokens):
         return self.oneping.embed(tokens, **self.kwargs)
 

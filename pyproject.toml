@@ -17,7 +17,7 @@ classifiers = [
     'Programming Language :: Python :: 3',
 ]
 keywords = ['llm', 'vectordb', '']
-dependencies = ['toml', 'torch', 'transformers', 'tiktoken', 'sentencepiece']
+dependencies = ['toml', 'torch', 'transformers', 'tiktoken']
 requires-python = '>=3.7'
 
 [project.optional-dependencies]

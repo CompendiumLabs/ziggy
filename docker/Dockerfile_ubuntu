@@ -1,0 +1,34 @@
+# syntax=docker/dockerfile:1.2
+FROM nvidia/cuda:12.2.2-devel-ubuntu22.04
+
+# Install base packages
+RUN apt update
+RUN apt install -y libssl-dev curl build-essential pkg-config git python3 python3-pip
+RUN pip install --upgrade pip
+
+# Install rust with rustup
+RUN curl -sSf https://sh.rustup.rs | bash -s -- -y --profile minimal
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Install python tools
+RUN pip install ipython torch huggingface-hub transformers
+RUN pip install git+https://github.com/CompendiumLabs/ziggy
+
+# Install text-embeddings-inference (and rust)
+ENV CUDA_COMPUTE_CAP=80
+RUN git clone https://github.com/huggingface/text-embeddings-inference /opt/text-embeddings-inference
+RUN cargo install --path /opt/text-embeddings-inference/router -F candle-cuda
+
+# Install user tools
+RUN apt install -y screen zsh
+RUN pip install nvitop
+ENV SHELL="/bin/zsh"
+
+# Install randos
+ENV XH_BINDIR="/usr/local/bin"
+RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ducaale/xh/master/install.sh)"
+
+# Keep container running
+WORKDIR /root
+CMD ["sleep", "infinity"]

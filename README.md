@@ -60,3 +60,17 @@ db.search('Anarchism', 5)
 ```
 
 By default the indexing operation will have generated average embeddings at the document level and these are used as a first pass when searching.
+
+# Text-Embeddings-Inference
+
+Command to start up `Qwen3-Embedding-0.6B` locally.
+
+```bash
+text-embeddings-router --model-id "Qwen/Qwen3-Embedding-0.6B" --hostname 127.0.0.1 --port 8080 --max-client-batch-size 32768 --max-batch-tokens 32768
+```
+
+Send a test message to the server
+
+```bash
+xh http://127.0.0.1:8080/v1/embeddings input="hello world"
+```

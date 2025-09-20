@@ -22,14 +22,16 @@ RUN pip install git+https://github.com/CompendiumLabs/ziggy
 RUN pip install git+https://github.com/CompendiumLabs/oneping
 
 # Install user tools
-RUN apt install -y screen zsh
+RUN apt install -y nano screen zsh
 RUN pip install nvitop
 ENV SHELL="/bin/zsh"
 
 # Install randos
 ENV XH_BINDIR="/usr/local/bin"
-RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
 RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ducaale/xh/master/install.sh)"
+RUN sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+RUN git clone https://github.com/zsh-users/zsh-autosuggestions ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-autosuggestions
+RUN sed -i 's/^plugins=(git)/plugins=(git zsh-autosuggestions)/' ~/.zshrc
 
 # Keep container running
 WORKDIR /root

@@ -168,7 +168,7 @@ def similarity_topk(
 
     # save to disk
     torch.save({
-        'topk_num': topk,
+        'topk_num'    : topk,
         'topk_sim_pre': prek,
         'topk_sim_pos': posk,
     }, path_sims)
@@ -177,7 +177,7 @@ def similarity_topk(
 def similarity_mean(
     path_vecs, # ziggy database
     path_pats, # patent metadata csv (for comparison!)
-    path_sims=None, # output torch file
+    path_sims, # output torch file
     path_vecs1=None, # comparison ziggy database
     batch_size=8, # batch size for similarity computation
     max_rows=None, # limit rows if requested
@@ -220,7 +220,7 @@ def similarity_mean(
     # get application year for patents
     app_year = torch.tensor(pats['appdate'].dt.year, dtype=torch.int32, device=device1)
     year_min, year_max = min_year, app_year.max().item()
-    year_idx = app_year - year_min
+    year_idx = (app_year - year_min).clamp(min=0)
 
     # get application year statistics
     n_years = year_max - year_min + 1
@@ -232,7 +232,8 @@ def similarity_mean(
 
     # generate similarity metrics
     for i1, i2 in batch_indices(n_pats, batch_size):
-        print(f'{i1} → {i2}')
+        if i1 % 1024 == 0:
+            print(f'{i1} → {i2}')
         n_batch = i2 - i1
 
         # compute similarities for batch
@@ -248,13 +249,9 @@ def similarity_mean(
         sums = torch.bincount(offsets.view(-1), weights=sims.view(-1), minlength=n_years*n_batch)
         avgt[i1:i2] = sums.reshape(n_years, n_batch).T / c_years[None,:]
 
-    # return results
-    res = {
+    # save to disk
+    torch.save({
         'year_sims': avgt   ,
         'year_nums': c_years,
         'year_inds': y_years,
-    }
-    if path_sims is not None:
-        torch.save(res, path_sims)
-    else:
-        return res
+    }, path_sims)

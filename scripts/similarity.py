@@ -48,6 +48,11 @@ def demean_inplace(x):
     x -= x.mean(dim=0)[None,:]
     x /= x.square().sum(dim=1)[:,None]
 
+# get columns from a 2D tensor
+def get_cols(x, j):
+    assert x.ndim == 2 and j.ndim == 1
+    return x.gather(1, j.unsqueeze(1)).squeeze(1)
+
 # load ziggy TorchVectorIndex directly or from TextDatabase
 def load_database(path, device='cuda'):
     data = torch.load(path, map_location=device, weights_only=True)
@@ -255,3 +260,60 @@ def similarity_mean(
         'year_nums': c_years,
         'year_inds': y_years,
     }, path_sims)
+
+# compute patent novelty metric (on device)
+def patent_novelty(sim_data, meta_data, delta=5, device='cuda', year_cut=torch.inf):
+    # load if needed
+    if isinstance(sim_data, (str, Path)):
+        sim_data = torch.load(sim_data, weights_only=True)
+    if isinstance(meta_data, (str, Path)):
+        meta_data = pd.read_csv(meta_data)
+
+    # load similarity data
+    year_sim = sim_data['year_sims'].to(dtype=torch.float, device=device)
+    year_count = sim_data['year_nums'].to(dtype=torch.float, device=device)
+    year_min = sim_data['year_inds'].min().item()
+    year_max = sim_data['year_inds'].max().item()
+
+    # get data size
+    n_pats, n_years = year_sim.shape
+
+    # load patent metadata
+    min_str = f'{year_min}-01-01'
+    pat_date = pd.to_datetime(meta_data['appdate'].fillna(min_str))
+    app_year = torch.tensor(pat_date.dt.year.values, dtype=torch.int64, device=device)
+    year_idx = app_year - year_min
+
+    # get pre counts
+    count_pre = torch.zeros(n_pats, device=device)
+    simil_pre = torch.zeros(n_pats, device=device)
+    for i in range(delta):
+        idx = year_idx - i
+        sel = (idx >= 0) & (idx < n_years) & (app_year <= year_cut)
+
+        # idx1 = 0 when false for validity, but these got to zero in cnt1 and sim1
+        idx1 = torch.where(sel, idx, 0)
+        cnt1 = torch.where(sel, year_count[idx1], 0)
+        sim1 = torch.where(sel, get_cols(year_sim, idx1), 0)
+
+        count_pre += cnt1
+        simil_pre += cnt1 * sim1
+    simil_pre /= count_pre
+
+    # get pos counts
+    count_pos = torch.zeros(n_pats, device=device)
+    simil_pos = torch.zeros(n_pats, device=device)
+    for i in range(1, delta + 1):
+        idx = year_idx + i
+        sel = (idx >= 0) & (idx < n_years) & (app_year <= year_cut)
+
+        idx1 = torch.where(sel, idx, 0)
+        cnt1 = torch.where(sel, year_count[idx1], 0)
+        sim1 = torch.where(sel, get_cols(year_sim, idx1), 0)
+
+        count_pos += cnt1
+        simil_pos += cnt1 * sim1
+    simil_pos /= count_pos
+
+    # return similarities
+    return simil_pre, simil_pos

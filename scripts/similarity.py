@@ -143,7 +143,8 @@ def similarity_topk(
 
     # generate similarity metrics
     for i1, i2 in batch_indices(n_pats, batch_size):
-        print(f'{i1} → {i2}')
+        if i1 % 1024 == 0:
+            print(f'{i1} → {i2}')
 
         # compute similarities for batch
         vecs = index.values.data[i1:i2] # [B, D]
